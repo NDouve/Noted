@@ -1497,7 +1497,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0106 — The AI write path
 - **Date:** 2026-10-31
-- **Status:** Active, amended by 0110 (ai-link/2, codes instead of tokens, MCP tools 0.3.0) and 0124 (closed-page writes reread and merge); implements invariant 4 as worded in 0103; extends 0101
+- **Status:** Active, amended by 0110 (ai-link/2, codes instead of tokens, MCP tools 0.3.0) and 0124 (closed-page writes reread and merge); implements invariant 4 as worded in 0103; extends 0101; "Applying" amended by 0195 (a turn per box)
 - **Decision:**
   - **Local link:** while it runs, the app listens on loopback TCP (`127.0.0.1`, a port chosen by the system) and writes `ai-link.json` (`{"format":1,"port","pid","nonce"}`) in its data folder (`%APPDATA%\Noted`), removed on a clean exit. A client connects to loopback only and reads the greeting line `{"noted":"ai-link/1","nonce":…}`; it sends nothing unless the nonce matches the file. One request per connection, as one JSON line of at most 1 MiB: `{"noted":"ai-link/1","op":"write_box","token":…,"box":…,"mode":"replace"|"append","content":…}`. The app answers with one line, `{"ok":true,"page":…,"box":…}` or `{"ok":false,"code":…,"message":…}`, and closes the connection. Reads time out after 5 s, and at most 8 connections are open at once.
   - **Acceptance:** a write is accepted only if all of these hold, otherwise it gets the code in brackets:
@@ -1570,7 +1570,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0110 — How code checks work: ai-link/2 and MCP server 0.3.0
 - **Date:** 2026-11-01
-- **Status:** Active, amended by 0116 (closed-app reads, the running lock, the server log) and 0117 (closed-app writes) and 0122 (merge_requests and propose_merge) and 0133 (registering a copy) (approved by the maintainer; amends 0101 and 0106; implements invariant 4 for codes)
+- **Status:** Active, amended by 0116 (closed-app reads, the running lock, the server log) and 0117 (closed-app writes) and 0122 (merge_requests and propose_merge) and 0133 (registering a copy) (approved by the maintainer; amends 0101 and 0106; implements invariant 4 for codes); "Order of checks" amended by 0195
 - **Decision:**
   - **Open pages** are read by `noted_mcp` from saved files, as before; this works with Noted closed.
   - **Anything that needs a code** (box reads and writes, Privileged pages) goes through the running app over the link, so the app checks the code, its expiry, its role and target, and the session's approval, and logs the request. With Noted closed, code-based access fails with "This needs Noted running: codes are checked by the app. Open Noted and try again."
@@ -1853,7 +1853,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0132 — Damaged attachments are kept; node order in merges; conflict-copy verification; deletes that fail part way; file format document
 - **Date:** 2026-11-03
-- **Status:** Active (the damaged-copy rule and its normalisations approved by the maintainer for this run; Box API 0.12 decided by the PM under delegated authority; the node-order rule decided by the PM and awaiting the maintainer's confirmation; amends 0051, 0053, 0098 and 0128); additions after the last shared node amended by 0134; a delete that fails part way amended by 0155; landing kept files and template deletes amended by 0172
+- **Status:** Active (the damaged-copy rule and its normalisations approved by the maintainer for this run; Box API 0.12 decided by the PM under delegated authority; the node-order rule decided by the PM and awaiting the maintainer's confirmation; amends 0051, 0053, 0098 and 0128); additions after the last shared node amended by 0134; a delete that fails part way amended by 0155; landing kept files and template deletes amended by 0172; attachments that are not downloaded amended by 0196
 - **Decision:**
   - **Attachments are checked wherever they are trusted (amends 0098):** before a file is used for display, embedding or opening, and when a file with the same name is already there as one is written, its bytes are hashed (streamed) and compared: on the notebook side with the hash in the file's name, in the box module with the hash the box stores, and the two must agree. Embedded data is compared with its hash when it is decoded. A file smaller than the box's recorded size, or still changing, is "Still syncing". At full size with the wrong hash it is **damaged**: both copies are kept. The damaged file is renamed beside it as `<name>.damaged-<first 12 hex of its actual hash>`, never over anything; the good copy is written under the hash name when its bytes are at hand (or kept as `<name>.kept-<n>` if the name can't be freed); and the user is told by the box's own file name. A missing hash-named file is first looked for among its kept copies and put back if one now holds the right hash. Damaged embedded data is kept in the page byte for byte and is never converted. The box shows that the file is damaged, not "Still syncing", while it is open. A file still syncing is checked again when the folder changes, not on every redraw. Older readers ignore the extra names: they are not hash names and not temporary files. **Box API 0.12** adds the optional `VerifyingAttachmentStore` for this; `AttachmentStore` is unchanged. *(Amended by 0172: kept files landing from the recovery folder, and the attachment files a deleted template leaves, follow the same rule: a damaged copy at a hash name is kept, never replaced or deleted.)*
   - **Node order (amends 0051):** the three-way merge takes the other side's order of the nodes both sides kept when only the other side changed it; when this side changed it, or both did, this side's order stays. Nodes either side added are placed after their predecessor, as before.
@@ -2673,7 +2673,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0190 — iCloud Drive: files not downloaded yet, folder access on Apple devices, and iCloud versions
 - **Date:** 2026-11-23
-- **Status:** Active (the build team (PM), run 2026-11-23-01, steps 3, 5, 6 and 7 of the reviewed note `2026-11-15-01-cloud-parity` revision 5.5, under 0182 and 0185; the `@Native` wording of the server's dataless check is the maintainer's answer of 2026-11-23); amends 0129
+- **Status:** Active (the build team (PM), run 2026-11-23-01, steps 3, 5, 6 and 7 of the reviewed note `2026-11-15-01-cloud-parity` revision 5.5, under 0182 and 0185; the `@Native` wording of the server's dataless check is the maintainer's answer of 2026-11-23); amends 0129; reading a file that may not be downloaded, iCloud versions and conflict-copy retries amended by 0194; attachments and Apple moves amended by 0196
 - **Decision:**
   - **Not downloaded (dataless).** On Apple devices a file the system has evicted (`SF_DATALESS`), or a name with only its `.<name>.icloud` stub, is never read, parsed, taken for absent or deleted. It is listed "Still downloading" and its download is requested at open and on each change. A save over it keeps the edit as the page's recovery generation and saves again when the file changes; a kept edit replayed at launch waits the same way. A page whose own file is only a stub is still the page: conflict and recovered copies beside it, and copies of those, wait for it and merge when it arrives. The checked primitives answer busy for it, and also for a present file with a stub beside it, before anything moves. A stubbed name counts as taken.
   - **The MCP server** applies the same rule with no iCloud case: a not-downloaded page counts by the ids in its name, or as unknown, so the server refuses more, never less, and writes nothing new. Its storage files are exactly the exclusive publisher, the checked drop, the coordination hook and the dataless check; `dart:ffi` is imported only by the publisher and the dataless check, whose native calls are exactly the `@Native` leaf functions `lstat` and `lstat$INODE64`, with no allocator.
@@ -2703,7 +2703,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0192 — A test's notebooks are settled before its folder is deleted; the iCloud reload test's crash snapshot
 - **Date:** 2026-11-24
-- **Status:** Active (the build team (PM), run 2026-11-24-01); amends 0126's test bullet
+- **Status:** Active (the build team (PM), run 2026-11-24-01); amends 0126's test bullet; the watchdog and the hung seed amended by 0198
 - **Decision:**
   - **Tests (amends 0126):** every test that owns a notebook deletes its temp folder through `deleteTestFolder` (`app/test/support/notebook_folder.dart`). It first waits until every notebook and cloud sync under the folder reports nothing in flight (saves, file reads and checks, attachment checks, recovery, landing, discovery, queued checks, watcher timers, sync rounds), then deletes, retrying only Windows errors 5, 32 and 145 for at most 20 seconds. A delete that still fails, or work still running after the limit, fails the test and names what was running. `settleSaves` uses the same wait.
   - **App hooks:** `Notebook.inFlightForTest` and `CloudSync.inFlightForTest` report that work; `Notebook.liveForTest` and `CloudSync.liveForTest` are filled only in debug builds; `RecoveryLock.releaseForTest()` closes a lock handle. They change no behaviour.
@@ -2722,6 +2722,65 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - **Tests and CI:** every publish site is tested with `link` forced to fail; the reload-equivalence test runs seeds with the Android publisher; an `android-emulator` CI job (API 34, 30 and 26) installs the debug build fresh, saves a page, force-stops, relaunches and checks the text, and records the `link` errno and the first-launch screen.
 - **Rationale:** with `link` refused, every save on Android threw, so the first page couldn't be created and the first launch never finished. The no-replace rename keeps 0127's guarantee where the kernel has it; below API 30 the single-writer argument covers the remaining window.
 - **Alternatives considered:** a replacing rename (can overwrite); a copy and delete (not atomic, and deletes a name); refusing to save on Android (the app wouldn't start); taking a file lock around each publish (Noted is already the only writer there).
+
+## 0194 — Reading a stored file that may not be downloaded; iCloud version temps; new iCloud versions; conflict-copy retries
+- **Date:** 2026-11-26
+- **Status:** Active (the build team (PM), run 2026-11-25-01, from the reviewed notes `2026-11-25-01-t3a-evicted-reads`, `2026-11-25-01-t3c-resolve-keep` and `2026-11-24-01-t2b-icloud-new-versions`); amends 0190
+- **Decision:**
+  - **One guarded read (amends 0190's "never read").** The app and the core read a page, binder, template, recovery or attachment file only through `readStored` / `openStoredRead` / `openStoredFile` (`noted_core/lib/src/storage/stored_read.dart`). Each checks first, with metadata only, that the file is downloaded. The answer is the bytes, *not downloaded* (the file's download is asked for, and nothing is read), *missing* (no file and no stub), or a failure. No separate `exists` or `type` check decides that a file is gone. A test (`stored_reads_test.dart`) scans every raw file read in the app and packages and fails on one that isn't routed or allow-listed with a reason. The MCP server keeps its own check (0190) and isn't routed.
+  - **What the user sees:** an open page whose file is no longer downloaded becomes read-only, "This page is read-only while its file downloads. Your edits are kept in recovery."; a conflict copy whose page is not downloaded is listed "A copy; its page is still downloading" and merged once it is.
+  - **iCloud versions are kept until their bytes are seen (amends 0190's "iCloud versions").** A version is resolved only while its version temp holds its bytes. The temp is removed, with a checked delete, only once those bytes are read back from a regular file after the resolve. Otherwise it is published under a free `-icloud-<hash>` name, through a staged copy, so a version is never let go.
+  - **New versions while the app runs.** The Apple folder channel reports that an item gained a version. A metadata-only `withVersions` call lists the versions not seen before, and the app lands only those, with a backstop on a backoff of 1 to 30 minutes. A version that couldn't be kept, for example because its names are taken, is retried when one of those names changes, when its versions change, and on that backoff.
+  - **Conflict-copy merges.** A merge is checked before anything is applied to the screen or written. A merge that would drop a node is refused for good, and the copy stays listed. A merge refused for a passing reason is retried when its original is seen and at the folder check. Passing reasons are chosen by error type, never by message text: the folder busy, a sharing violation, files that keep changing, or a read-back that differs because another writer saved. A retried delete of the same copy reuses its recovery entry.
+- **Rationale:** a stored file read while it was evicted is downloaded on the spot or read as empty, and a file taken for gone was retired or deleted; a version resolved before its copy landed was lost; versions that arrived while the app ran waited for a relaunch; a copy refused for a passing reason stayed unmerged all session.
+- **Alternatives considered:** a check at each call site (each one missed some); resolving versions after copying, without keeping the temp (lost a version that sync replaced at once); retrying by matching error text (language-dependent, and a file name could match it).
+
+## 0195 — AI writes to one box are applied in the order they arrive
+- **Date:** 2026-11-26
+- **Status:** Active (the build team (PM), run 2026-11-25-01, from the reviewed note `2026-11-25-01-t3b-ai-write-order`); amends 0106 ("Applying") and 0110 ("Order of checks")
+- **Decision:**
+  - **A turn per box (amends 0106).** Each write to a box takes its place in that box's line when it arrives: an approved code's write right after the request is read, and a not-yet-approved code's write when its question is answered Allow, in arrival order. It waits for the write ahead of it to finish, within its 50 s deadline, before its lookup, checks and question. A write that gives up never lets a later write overtake an earlier one.
+  - **Order of checks (amends 0110).** After the turn: the client is still connected, *Ask before each write* is read as it is now, then the question. While a write of the same code ahead is being asked, a new write of that code answers `busy` at once (0115's one question per code). A per-write question is shown only if at least the lookup time plus 5 s is left; otherwise the write answers `busy`.
+  - Writes to other boxes are not held. The MCP server and the link protocol are unchanged.
+- **Rationale:** two writes to one box were applied in the order their awaits happened to finish; a replace then an append gave the append's text first, and both answered `ok`.
+- **Alternatives considered:** one queue for all boxes (holds unrelated boxes behind a question); ordering by the request id the client sends (clients don't send one).
+- **Known limits:** turning *Ask before each write* on during a write's own page lookup doesn't affect that write; a question shows the connection's label as it was when the write arrived.
+
+## 0196 — Attachments that are not downloaded
+- **Date:** 2026-11-26
+- **Status:** Active (the build team (PM), run 2026-11-25-01, from the reviewed note `2026-11-24-01-t2a-attachment-download` revision 8 and its build rules); amends 0190 and 0132; Box API 0.17
+- **Decision:**
+  - **The attachment store asks for downloads.** On opening a page and on each change, the store asks for the attachments that are not downloaded, at most once per 30 s per file and at once on Retry. The image box and the file box show "Downloading…" or "Can't download" (the platform's message as tooltip) with *Retry*; opening a downloading file says "This file is still downloading. Open it again once it's here." A write over an attachment that is not downloaded is refused as busy, with no kept copy.
+  - **Copies never copy what is not here.** Every copy of a page's files — a move across drives, Save a copy, template saves, a new page or binder from a template, a put-back across drives — lists its files first and refuses before copying, or mid-copy, removing only what it created. A refused rollback leaves the files of anything that still stands (a template, a page sync changed).
+  - **Apple moves and deletes (amends 0190).** On Apple devices a folder holding a file that is not downloaded, or a folder that is itself evicted, is never renamed, listed into or removed: the move answers busy and leaves those files, named in a notice ("Still downloading, left in …"), and a delete of a page with such a file is refused whole before anything is set aside. A folder rename runs off the UI thread and is named after 2 s.
+  - **Box API 0.17 (additive):** `DownloadingAttachmentStore` and `AttachmentDownload`; host-only `moveExclusive` `ask` and `walk`, and `folderWalk`.
+- **Rationale:** an evicted attachment read by a copy was downloaded on the spot or copied empty; an iCloud folder rename with an evicted file in it can fail or detach the file.
+- **Alternatives considered:** downloading everything before a copy (unbounded wait); copying placeholders (0189's "never copy a placeholder").
+- **Known limits:** saves waiting behind a slow folder rename are not guaranteed through a crash; quitting during that wait is untested.
+
+## 0197 — Export one box (desktop)
+- **Date:** 2026-11-26
+- **Status:** Active (the build team (PM), run 2026-11-25-01, steps 1 and 2 of the reviewed note `2026-11-24-01-t4-export`); Box API 0.18
+- **Decision:**
+  - **What.** *File → Export…* on desktop exports the one selected box. Formats by box: note and AI box as plain text, Markdown, HTML or PNG; drawing as PNG or SVG; image as its original or PNG; file box as its original; and, where a module gives an image, JPEG and a single-page raster PDF made by the app. An encrypted, disallowed or switched-off box can't be exported. Not on phones and tablets yet.
+  - **Writing.** The file is written beside the target as a temp and published without replacing. A file of that name is replaced only after Noted's own "Replace <name>?" and only if it still has the content it had before the question; otherwise the previous file is kept aside and named, with *Put back*. Where hard links don't work (the macOS sandbox grants only the chosen file), a new file is created exclusively and a name that is taken is refused. Noted's own folders are refused as targets. Names are capped so every temp name stays within 255 bytes.
+  - **Content.** Markdown escapes literal Markdown syntax, HTML escapes markup and carries a policy that loads nothing; links keep only `http`, `https` and `mailto` targets. Exported rasters are at most 4,096 px a side and 16 MP; an image over 100 MP is refused before decoding. AI-written markers are not exported.
+  - **Box API 0.18 (additive):** `ExportFormat`, `ExportedFile`, `ExportContext`, `ExportRefused`, `BoxModule.exportFormats` and `export`, `BoxContext.offscreen`.
+  - **Not built:** a device entry point (for the maintainer), Print preview and layouts of several boxes, a vector PDF (needs a dependency outside the delegated set).
+- **Rationale:** a box's content could leave Noted only by copy and paste.
+- **Alternatives considered:** `package:pdf` (not a Dart- or Flutter-team package); the system print dialog for PDF (not on every platform); overwriting with the save dialog's own confirmation (no check that the file is unchanged).
+- **Known limits:** Windows asks twice before replacing (its dialog, then Noted's); an exported HTML page has no title; a large PNG may be decoded in full before it is scaled.
+
+## 0198 — A binder whose file comes back; tests: a watchdog and the Android emulator job
+- **Date:** 2026-11-26
+- **Status:** Active (the build team (PM), run 2026-11-25-01); amends 0192's test bullet
+- **Decision:**
+  - **Watchdog.** Every app test file runs under a watchdog isolate (`app/test/flutter_test_config.dart`) that names the test and its last step when a test has run 180 s and the test isolate hasn't answered for 30 s (`NOTED_WATCHDOG=0` turns it off). It uses `test_api` 0.7.12, pinned, as a dev dependency.
+  - **Reload tests on CI.** A manual workflow (`reload-seeds.yml`) runs the iCloud reload test on Windows for a range of seeds, then one seed repeated. In the iCloud reload test a seed whose disposal hangs releases its storage coordinator, so it fails alone.
+  - **Android emulator job.** CI installs the debug build on API 34, 30 and 26 emulators, saves a page, force-stops, relaunches and checks the text (0193).
+  - **A binder disabled because its file was missing** is read again at the folder check once its file is on disk. A binder removed or replaced while it is being reopened stays as it is, and pages read for a binder removed meanwhile are forgotten.
+- **Rationale:** a binder whose file came back stayed disabled until a relaunch; a hung test gave no name or step; one hung seed failed every seed after it.
+- **Alternatives considered:** per-test timeouts only (they don't say where a test stopped).
 
 ---
 
