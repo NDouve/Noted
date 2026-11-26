@@ -2198,7 +2198,7 @@ class _Sim {
   /// A conflict copy the app merged and deleted waits in recovery for `copyRetireAfter`
   /// (30 s by the notebook's clock) before a read of the page decides whether the page
   /// still holds it or a sync client put an older file back (then the merge is done
-  /// again, 0183). The settle does not wait 30 s: it moves the notebook's clock past it,
+  /// again, 0183). The settle does not wait 30 s: it asks the app to run each check now,
   /// for the check only, and asks for the check, so the live page is compared with the
   /// reload after the app's own re-check, never before it.
   Future<void> settleConsumedCopies() async {
@@ -2206,27 +2206,24 @@ class _Sim {
     if (waiting.isEmpty) return;
     phase = 'settle: consumed copies';
     final pagesWithEntries = {for (final e in waiting) e.pageId};
-    // A page that is open is checked when it is closed: leave it for one without entries.
-    final other = pageIds.where((id) => !pagesWithEntries.contains(id) && pageLoc(id) != null).toList()..sort();
-    if (other.isNotEmpty) {
-      try {
-        await nb.open(other.first);
-      } on Object {
-        // not downloaded: the check below says so
-      }
-    }
-    final real = DateTime.now;
-    final start = real();
-    nb.now = () => real().add(Duration(seconds: 31)).add(real().difference(start));
+    // The re-check skips the open page (its entry is looked at once it is left): a page
+    // made for the purpose, with no entry, is opened, so every consumed copy is decided.
     try {
-      for (var i = 0; i < 2; i++) {
-        await nb.recoverNowForTest();
-        await nb.flush();
-        await nb.discoveryIdle;
-      }
-    } finally {
-      nb.now = real;
+      await nb.createPage();
+    } on Object catch (e) {
+      violations.add('the settle could not open a page of its own to leave the others: $e');
     }
+    if (pagesWithEntries.contains(nb.currentId)) {
+      violations.add('a page with a consumed copy is open, so its re-check would be skipped');
+    }
+    // The app's own seam makes each re-check due and runs it: the notebook's clock is left
+    // alone (a redo stamps its mark with that clock).
+    await nb.recheckConsumedCopiesForTest();
+    await nb.flush();
+    await nb.discoveryIdle;
+    await nb.recoverNowForTest();
+    await nb.flush();
+    await nb.discoveryIdle;
   }
 
   void _recordDeclinedStrays() {
