@@ -7,10 +7,8 @@
 // and a file is ready. Boxes that fail are never decoded.
 
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/painting.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/src/export/export_flow.dart';
@@ -26,7 +24,6 @@ class _Codec extends BoxCodec<String> {
   const _Codec(this.typeId, {this.version = 1});
   @override
   final String typeId;
-  final int version;
   @override
   int get dataVersion => version;
   @override
@@ -50,13 +47,12 @@ class _Codec extends BoxCodec<String> {
 }
 
 class _Module extends BoxModule<String> {
-  _Module(this.id, this.formats, {int version = 1}) : _version = version;
+  _Module(this.id, this.formats);
   final String id;
   final List<ExportFormat> formats;
-  final int _version;
 
   @override
-  BoxCodec<String> get codec => _Codec(id, version: _version);
+  BoxCodec<String> get codec => _Codec(id);
   @override
   Widget buildEditor(BuildContext context, BoxContext<String> box) => const SizedBox();
   @override

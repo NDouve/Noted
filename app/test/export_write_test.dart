@@ -338,9 +338,9 @@ void main() {
       final w = writer(
         replace: (tmp, to, id) async {
           // Mid-replace: the target is aside, and a Put back must leave it.
-          File(to).renameSync(path('out.txt.${pid}-1a2b3c4d-5e6f7a8b.cas-old'));
+          File(to).renameSync(path('out.txt.$pid-1a2b3c4d-5e6f7a8b.cas-old'));
           await w2!.putBack(to);
-          File(path('out.txt.${pid}-1a2b3c4d-5e6f7a8b.cas-old')).renameSync(to);
+          File(path('out.txt.$pid-1a2b3c4d-5e6f7a8b.cas-old')).renameSync(to);
           return replaceIfUnchanged(tmp, to, null, identity: id);
         },
       );
