@@ -15333,7 +15333,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   Future<String> _whyUnreadable(String path, String id) async {
     try {
       final r = await _read(path);
-      if (r is StoredNotDownloaded) return stillDownloading;
+      if (r is StoredNotDownloaded) return 'it is still downloading';
       if (r is StoredFailed) throw r.error;
       final page = readPage(utf8.decode((r as StoredBytes).bytes));
       return page.id != id ? 'it holds a different page' : "it isn't a page this version of Noted can read";
@@ -15407,7 +15407,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           return (ran: true, theirs: null);
         // Not downloaded: asked for; read-only until it is there, then merged.
         case StoredNotDownloaded():
-          if (_current == c) await _blockOpen(loc, _key(path), stillDownloading, id);
+          if (_current == c) await _blockOpen(loc, _key(path), 'it is still downloading', id);
           return (ran: false, theirs: null);
         case StoredFailed(:final error):
           throw error;
