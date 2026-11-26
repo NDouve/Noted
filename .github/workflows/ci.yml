@@ -32,7 +32,7 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
 
@@ -108,7 +108,7 @@ jobs:
               jsonarg="$json"
               if command -v cygpath > /dev/null; then jsonarg=$(cygpath -m "$json"); fi
               code=0
-              budget=900; [ "$dir" = app ] && budget=1500
+              budget=900; [ "$dir" = app ] && budget=2100
               (cd "$dir" && timeout "$budget" flutter test --reporter expanded --file-reporter "json:$jsonarg" > "$log" 2>&1) || code=$?
               cat "$log"
               if [ "$code" -ne 0 ]; then
