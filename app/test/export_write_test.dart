@@ -430,6 +430,27 @@ void main() {
       expect(names(), ['out.txt']);
     });
 
+    test('a failed exclusive create removes its partial file, or in the sandbox names it', () async {
+      ExclusiveOpener failing() => (p) {
+        File(p).createSync();
+        return _FailingFile(File(p).openSync(mode: FileMode.writeOnly));
+      };
+      var r = await write(writer(hardLinks: (_) async => false, opener: failing()), 'data');
+      expect(r.kind, ExportWriteKind.failed);
+      expect(r.message, 'Could not write out.txt. Nothing was exported.');
+      expect(names(), isEmpty, reason: 'the partial file was the bytes written, so it is removed');
+      final sandboxed = ExportWriter(
+        askReplace: (name) async => true,
+        askPutBack: (name, aside) async => true,
+        sandboxed: true,
+        hardLinks: (_) async => false,
+        opener: failing(),
+      );
+      r = await write(sandboxed, 'data');
+      expect(r.message, 'out.txt may be incomplete.');
+      expect(names(), ['out.txt']);
+    });
+
     test('a name taken after the check is refused by the exclusive create itself', () async {
       final r = await writer(hardLinks: (_) async => false, opener: ioOpener()).write(target, () async {
         return b('x');
@@ -525,6 +546,21 @@ class _IoFile implements ExclusiveFile {
 
   @override
   void sync() => raf.flushSync();
+
+  @override
+  void close() => raf.closeSync();
+}
+
+/// A descriptor whose first write fails after writing nothing.
+class _FailingFile implements ExclusiveFile {
+  _FailingFile(this.raf);
+  final RandomAccessFile raf;
+
+  @override
+  int write(Uint8List bytes, int offset) => throw const FileSystemException('disk full');
+
+  @override
+  void sync() {}
 
   @override
   void close() => raf.closeSync();

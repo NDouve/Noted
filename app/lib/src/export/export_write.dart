@@ -157,7 +157,7 @@ class ExportWriter {
     } on ExclusiveWriteFailed catch (e) {
       return ExportWriteResult(
         ExportWriteKind.failed,
-        e.left ? '${e.message} Nothing else was changed.' : 'Could not write $name. Nothing was exported.',
+        e.left ? e.message : 'Could not write $name. Nothing was exported.',
       );
     } on FileSystemException catch (e) {
       return ExportWriteResult(ExportWriteKind.failed, _failureMessage(name, e));
