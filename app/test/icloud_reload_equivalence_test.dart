@@ -49,6 +49,7 @@ import 'package:noted/src/app_settings.dart';
 import 'package:noted/src/icloud_folders.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
+import 'package:noted_core/src/storage/dataless.dart' show debugDatalessKey, debugDatalessPaths, debugMarkDataless, debugUnmarkDataless;
 
 // The server's closed writer, as the other reload-equivalence tests use it
 // (they run the whole server in a child process; this is its page writer).
@@ -276,6 +277,19 @@ class _Sim {
   // The evictions whose first read has not come yet.
   final Set<String> evictExcuse = {};
 
+  // t3a (R-2): the files evicted through the dataless seam: present, not
+  // downloaded. [evictMode] says how the pinned scenario evicts: `stub` (the
+  // file goes and its stub stands) or `dataless` (the file stays).
+  final Set<String> seamed = {};
+  String evictMode = 'stub';
+  String? consumedPath; // the page with the consumed copy
+  String? consumedId;
+  String? consumedBefore; // its text before the merge
+
+  void unseam(String path) {
+    if (seamed.remove(path)) debugUnmarkDataless(path);
+  }
+
   // The app checks `isDataless` and then reads, and the file can go in between
   // (a job waiting for the folder's lock): the first read of a file after its
   // eviction is excused, the next is not.
@@ -283,7 +297,7 @@ class _Sim {
 
   Map<String, String> get evicted => {
     for (final e in evictedText.entries)
-      if (File(_stubOf(e.key)).existsSync()) e.key: e.value,
+      if (File(_stubOf(e.key)).existsSync() || seamed.contains(e.key)) e.key: e.value,
   };
   final List<({String path, String id})> versions = [];
   final Map<String, ({String path, String id})> versionOfMarker = {};
@@ -638,6 +652,12 @@ class _Sim {
 
   // A name with no file whose stub is there: not downloaded.
   bool _datalessNow(String p) {
+    final marked = debugDatalessPaths;
+    if (marked != null &&
+        marked.contains(debugDatalessKey(p)) &&
+        FileSystemEntity.typeSync(p, followLinks: false) != FileSystemEntityType.notFound) {
+      return true;
+    }
     final cut = p.lastIndexOf(RegExp(r'[\\/]'));
     final stub = '${p.substring(0, cut + 1)}.${p.substring(cut + 1)}.icloud';
     return FileSystemEntity.typeSync(stub, followLinks: false) !=
@@ -909,8 +929,10 @@ class _Sim {
     }
   }
 
-  void daemonWrite(File f, String text) =>
-      retrySync(() => f.writeAsStringSync(text));
+  void daemonWrite(File f, String text) {
+    unseam(f.path); // a daemon write brings the file back
+    retrySync(() => f.writeAsStringSync(text));
+  }
 
   // -- Operations ----------------------------------------------------------------------
 
@@ -1012,6 +1034,14 @@ class _Sim {
         await daemonEqualConflict();
       case 'daemonEvict':
         await daemonEvict();
+      case 'daemonEvictConsumed':
+        await daemonEvictConsumed();
+      case 'appConsumedCopy':
+        await appConsumedCopy();
+      case 'daemonRevert':
+        await daemonRevert();
+      case 'appRecheck':
+        await appRecheck();
       case 'daemonMaterialize':
         await daemonMaterialize();
       case 'daemonNewPage':
@@ -1247,6 +1277,96 @@ class _Sim {
     if (rnd.nextBool()) await w.channel.emit('changed', {'path': file.path});
   }
 
+  // -- t3a (R-2): a consumed copy whose page is evicted --------------------------
+
+  /// The recovery entries kept for page [id].
+  Future<int> _entriesOf(String id) async =>
+      (await nb.recoveryStoreForTest!.list()).entries.where((e) => e.pageId == id).length;
+
+  /// Makes a consumed copy for the page that is open and closes it: a conflict
+  /// copy beside it is merged by the app, which keeps the copy in recovery
+  /// until a later read of the page shows it is held (0183). The page's text
+  /// before the merge is kept for [daemonRevert].
+  Future<void> appConsumedCopy() async {
+    await nb.flush();
+    final id = nb.currentId!;
+    final path = '$drivePath/$id.canvas';
+    final before = readText(File(path));
+    if (before == null) throw StateError('seed $seed: the page $id has no file to copy');
+    final q = await nb.createPage(); // [id] is closed now
+    pageIds.add(q);
+    await nb.checkFile(path);
+    final m = marker();
+    final copy = File('$drivePath/$id-DESKTOP-ABC.canvas');
+    daemonWrite(copy, writePage(readPage(before).insertNode(box(m))));
+    claim(m, 'a conflict copy of $id');
+    for (var i = 0; i < 6 && copy.existsSync(); i++) {
+      await nb.checkFile(copy.path);
+    }
+    if (copy.existsSync() || await _entriesOf(id) != 1) {
+      throw StateError('seed $seed: the copy of $id was not merged and kept (entries ${await _entriesOf(id)})');
+    }
+    consumedId = id;
+    consumedPath = path;
+    consumedBefore = before;
+  }
+
+  /// A sync client puts back the page's file as it was before the merge: the
+  /// entry is then the only place the copy's boxes are kept.
+  Future<void> daemonRevert() async {
+    final path = consumedPath, text = consumedBefore;
+    if (path == null || text == null) return;
+    daemonWrite(File(path), text);
+    if (rnd.nextBool()) await w.channel.emit('changed', {'path': path});
+  }
+
+  /// The daemon evicts the consumed copy's page ([evictMode]: its file goes and
+  /// a stub stands, or the file stays and is not downloaded). A stub-only page
+  /// is first seen gone (an eviction looks like a delete first), so the app
+  /// lists it nowhere.
+  Future<void> daemonEvictConsumed() async {
+    final path = consumedPath;
+    if (path == null) return;
+    final text = readText(File(path));
+    if (text == null) return;
+    evictedText[path] = text;
+    if (evictMode == 'dataless') {
+      debugMarkDataless(path);
+      seamed.add(path);
+    } else {
+      retrySync(() => File(path).deleteSync());
+      await nb.checkFile(path); // seen gone: the page is listed nowhere
+      retrySync(() => File(_stubOf(path)).writeAsStringSync(''));
+    }
+    evictExcuse.add(_norm(path));
+    if (rnd.nextBool()) await w.channel.emit('changed', {'path': path});
+  }
+
+  bool _recheckChecked = false;
+
+  /// The re-check of the consumed copies, run now. Before the first one the
+  /// state is the pinned one: the entry is there, not parked or deleting, and
+  /// the page is not open and not busy. The page's eviction excuse is cleared,
+  /// so a read of it here is a violation.
+  Future<void> appRecheck() async {
+    final id = consumedId;
+    if (id == null) return;
+    if (!_recheckChecked) {
+      _recheckChecked = true;
+      final problems = <String>[
+        if (await _entriesOf(id) != 1) 'the entry of $id is not there',
+        if (nb.consumedCopiesForTest.isEmpty || nb.consumedCopiesForTest.values.any((p) => p))
+          'the mark is not there, or is parked',
+        if (nb.currentId == id) '$id is open',
+        if (nb.isBusy(id)) '$id is busy',
+      ];
+      if (problems.isNotEmpty) throw StateError('seed $seed: not the pinned state: ${problems.join(', ')}');
+    }
+    evictExcuse.clear();
+    await nb.recheckConsumedCopiesForTest();
+    await nb.discoveryIdle;
+  }
+
   Future<void> daemonMaterialize({String? path, bool told = false}) async {
     final target =
         path ??
@@ -1256,6 +1376,7 @@ class _Sim {
     if (target == null) return;
     final text = evictedText[target];
     if (text == null) return;
+    unseam(target);
     retrySync(() {
       File(target).writeAsStringSync(text);
       final stub = File(_stubOf(target));
@@ -1330,6 +1451,10 @@ class _Sim {
     for (final p in evicted.keys) {
       final id = _base(p).replaceAll('.canvas', '');
       if (!seen.contains(id)) continue; // the app never listed it
+      // The pinned t3a scenario evicts as a delete first (an eviction looks like
+      // one), so the app forgot the page before its stub showed; it lists the
+      // stub at its next scan. That state is what the scenario is about.
+      if (p == consumedPath) continue;
       if (listed.contains(id) || unreadable.contains(_norm(_base(p)))) continue;
       violations.add(
         '${_base(p)} is only a stub, and the app lists neither the page nor the file',
@@ -1710,6 +1835,7 @@ class _Sim {
 
   Future<void> dispose() async {
     await disposeSeam?.call();
+    debugDatalessPaths = null;
     await w.dispose();
     if (snapRoot.existsSync()) await deleteTestFolder(snapRoot);
   }
@@ -2222,6 +2348,46 @@ void main() {
         ),
       );
     }, timeout: const Timeout(Duration(minutes: 4)));
+
+    // t3a (R-2, 0190, 0183): a consumed copy's page is evicted after the sync
+    // client put the pre-merge file back, so the entry is the only place the
+    // copy's boxes are kept. The re-check must not read the page, and must not
+    // take a stub for a deleted page and retire the entry. Pinned: make the
+    // consumed copy for the page and close it, revert, evict, check, re-check;
+    // then the page comes back and the re-check retires the entry. Once per
+    // seed in each mode: a stub only, and present but dataless (the seam).
+    // Without the guarded read the stub-only mode loses the copy's boxes (a
+    // marker in no file), and the dataless mode reads the evicted file.
+    for (final seed in seeds.isEmpty ? const <int>[] : seeds.take(_fixedSeeds)) {
+      for (final mode in ['stub', 'dataless']) {
+        test(
+          'seed $seed, a consumed copy\'s page evicted ($mode): the re-check keeps the entry',
+          () => _sequence(
+            seed,
+            setUp: (s) {
+              s.killKind = 'none'; // no kill in this scenario
+              s.evictMode = mode;
+            },
+            plan: const [
+              'appEdit',
+              'appConsumedCopy',
+              'daemonRevert',
+              'daemonEvictConsumed',
+              'appCheck',
+              'appRecheck',
+              'appCheck',
+              'appRecheck',
+              'daemonMaterialize',
+              'appCheck',
+              'appRecheck',
+              'appRecheck',
+              'appRecheck',
+            ],
+          ),
+          timeout: const Timeout(Duration(minutes: 4)),
+        );
+      }
+    }
 
     test('every kill point was reached by some seed', () {
       if (_ranSeeds.length < _fixedSeeds) return; // a single seed was asked for
