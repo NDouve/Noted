@@ -48,6 +48,8 @@ class _Target implements CanvasCommandTarget {
   @override
   Future<bool> pasteFiles() async => false;
   @override
+  Future<void> Function()? get exportBoxHandler => null;
+  @override
   Future<void> insertFiles(List<IncomingFile> files, {Offset? at}) async {}
 }
 

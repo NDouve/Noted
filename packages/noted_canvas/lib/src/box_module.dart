@@ -13,6 +13,7 @@ import 'attachment_store.dart';
 import 'canvas_tool.dart';
 import 'command_host.dart';
 import 'commands.dart';
+import 'export_format.dart';
 
 /// What a box module sees of its box while it is on screen.
 ///
@@ -62,6 +63,12 @@ abstract interface class BoxContext<D> {
   /// Creates boxes for [files] beside this box (Box API 0.7), for example an
   /// image pasted while the caret is in a note.
   void insertFilesBeside(List<IncomingFile> files);
+
+  /// The view is drawn only to be rasterised for an export (Box API 0.18): it
+  /// is read-only, in the light theme, off screen. A module keeps it out of
+  /// anything that tracks the boxes the user is working in (the note and AI
+  /// modules keep it out of their live-editor registry).
+  bool get offscreen;
 }
 
 /// The Flutter side of a box type (0034). Each box type is one module.
@@ -133,6 +140,23 @@ abstract class BoxModule<D> {
   /// instead of opening the list of boxes under the point. Default: no links.
   bool linkAt(String boxId, Offset global) => false;
 
+  /// The formats this box can be exported in (Box API 0.18), or none, which
+  /// turns Export off for the box. The host adds JPEG and PDF after a listed
+  /// PNG itself (and drops a `jpeg` or `pdf` listed here).
+  List<ExportFormat> exportFormats(D data) => const [];
+
+  /// Makes the file for [format], one of [exportFormats], from the box's
+  /// saved [data] (Box API 0.18). Null when it can't (the host then says
+  /// nothing was exported).
+  Future<ExportedFile?> export(D data, ExportFormat format, ExportContext context) async => null;
+
+  /// Untyped [exportFormats], for the host.
+  List<ExportFormat> hostExportFormats(Object? data) => data is D ? exportFormats(data) : const [];
+
+  /// Untyped [export], for the host.
+  Future<ExportedFile?> hostExport(Object? data, ExportFormat format, ExportContext context) async =>
+      data is D ? await export(data, format, context) : null;
+
   /// Untyped [createFromFile], for the canvas.
   Future<(Object?, Size)?> hostCreateFromFile(IncomingFile file, AttachmentStore store) async =>
       await createFromFile(file, store);
@@ -174,6 +198,7 @@ final class BoxBinding {
     this.find,
     this.attachments,
     this.insertFilesBeside,
+    this.offscreen = false,
   });
 
   final String boxId;
@@ -193,6 +218,10 @@ final class BoxBinding {
 
   /// Creates boxes beside this one, or null where boxes can't be added.
   final void Function(List<IncomingFile> files)? insertFilesBeside;
+
+  /// The view is drawn only to be rasterised for an export (see
+  /// [BoxContext.offscreen]).
+  final bool offscreen;
 }
 
 final class _TypedBoxContext<D> implements BoxContext<D> {
@@ -222,6 +251,8 @@ final class _TypedBoxContext<D> implements BoxContext<D> {
   AttachmentStore? get attachments => _b.attachments;
   @override
   void insertFilesBeside(List<IncomingFile> files) => _b.insertFilesBeside?.call(files);
+  @override
+  bool get offscreen => _b.offscreen;
 
   static final ValueNotifier<BoxFind?> _noFind = ValueNotifier<BoxFind?>(null);
 }
