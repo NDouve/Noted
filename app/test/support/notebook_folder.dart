@@ -10,6 +10,7 @@ import 'package:noted/src/notebook.dart';
 
 import 'busy_retry.dart';
 import 'real_io.dart';
+import 'test_watchdog.dart';
 
 // The one rule for a test that owns a notebook and the temp folder it lives
 // in: the notebook is settled before the folder is deleted.
@@ -90,6 +91,7 @@ Future<void> settleNotebooks({
   Duration limit = const Duration(seconds: 20),
 }) async {
   assert(notebooks != null || under != null, 'say which notebooks');
+  stepForTest('settleNotebooks: waiting for the notebooks to be idle');
   final scaled = limit * realIoScale;
   final clock = Stopwatch()..start();
   var quiet = 0;
@@ -122,9 +124,11 @@ Future<void> settleNotebooks({
 /// widget test), after the test's own [settleNotebooks] with the tester when
 /// saves started in the fake zone.
 Future<void> deleteTestFolder(Directory dir, {Iterable<Notebook>? notebooks}) async {
+  stepForTest('deleteTestFolder: settling the notebooks under ${dir.path}');
   final own = (notebooks ?? notebooksIn(dir)).toList();
   await settleNotebooks(notebooks: own, under: dir);
   try {
+    stepForTest('deleteTestFolder: deleting ${dir.path}');
     if (dir.existsSync()) await busyRetry(() => dir.delete(recursive: true));
   } on FileSystemException catch (e) {
     fail('Could not delete ${dir.path} after the notebooks settled: $e. In flight: ${inFlightOf(own) ?? 'nothing'}.');

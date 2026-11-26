@@ -13116,7 +13116,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       _forgetPage(e.key);
     }
     final fresh = await _openBinder(path);
-    if (_disposed) return;
+    // Removed or replaced while it was read: nothing of it comes back.
+    // A binder removed meanwhile leaves none of the pages that were read.
+    if (!_disposed && _binders[path] == null) _forgetPagesAt(path);
+    if (_disposed || !identical(_binders[path], old)) return;
     fresh
       ..returnTo = old?.returnTo
       ..fallbackId = old?.fallbackId;
@@ -13164,6 +13167,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   // Drops what the notebook knows of page [id] (not its file).
+  void _forgetPagesAt(String path) {
+    for (final id in [for (final e in _loc.entries) if (e.value == path) e.key]) {
+      _forgetPage(id);
+    }
+  }
+
   void _forgetPage(String id) {
     _metas.remove(id);
     _heldPlacement.remove(id);
@@ -14957,6 +14966,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           if (onDisk) await _binderBack(b.path);
         } else if (!exists || !(onDisk || await _holdsBinderFile(b.path))) {
           await _binderGone(b);
+        } else if (_fileBackFor(b, onDisk)) {
+          // Disabled for want of its file, which is back (see below).
+          await _reopenBinder(b.path);
         }
         continue;
       }
@@ -14964,6 +14976,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         if (exists) await _binderBack(b.path);
       } else if (!exists) {
         await _binderGone(b);
+      } else if (b.fileMissing && !b.available) {
+        // Disabled for want of its binder file, which is back. The watcher may
+        // have started after the file was published and never see it, so the
+        // check reads the binder again.
+        final onDisk = await File('${b.path}${Platform.pathSeparator}$binderFileName').exists();
+        if (_fileBackFor(b, onDisk)) await _reopenBinder(b.path);
       }
     }
     for (final f in _folders.values.toList()) {
@@ -14988,6 +15006,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     if (!_disposed) await _strayCheck(); // O
   }
+
+  // Whether the checked binder [b], disabled for want of its file, is to be read
+  // again: the file is on disk, the binder was not removed or replaced since the
+  // check began, and no hold is running or waiting (it takes over then).
+  bool _fileBackFor(BinderSection b, bool onDisk) =>
+      onDisk &&
+      !_disposed &&
+      b.fileMissing &&
+      !b.available &&
+      identical(_binders[b.path], b) &&
+      b._hold == null &&
+      !_holdRuns.containsKey(_key(b.path));
 
   // Whether the folder [dir] holds a binder file, or an aside of one that a
   // killed replace left (which counts as holding it, as for the engine).
@@ -15085,6 +15115,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       _forgetPage(e.key);
     }
     final fresh = await _openBinder(path);
+    // A binder removed meanwhile leaves none of the pages that were read.
+    if (!_disposed && _binders[path] == null) _forgetPagesAt(path);
     if (_disposed || !identical(_binders[path], old)) return;
     if (fresh.missing) return; // gone again
     if (fresh.status == BinderStatus.unavailable) {

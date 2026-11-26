@@ -17,6 +17,7 @@ import 'package:noted_box_note/noted_box_note.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'notebook_folder.dart';
+import 'test_watchdog.dart';
 
 /// The app window over a real notebook in a temp folder, for the menu bar,
 /// panel and theme tests. Pages are "Alpha" (open) and "Beta".
@@ -76,6 +77,7 @@ class ShellWorld {
 
   /// Pumps frames (and real IO time) until the window is quiet.
   Future<void> settle(WidgetTester t) async {
+    stepForTest('ShellWorld.settle: pumping frames');
     for (var i = 0; i < 4; i++) {
       await t.pump(const Duration(milliseconds: 50));
       await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
@@ -90,6 +92,7 @@ class ShellWorld {
   AppMenuBarState bar(WidgetTester t) => t.state<AppMenuBarState>(find.byType(AppMenuBar));
 
   Future<void> close(WidgetTester t) async {
+    stepForTest('ShellWorld.close: unmounting the app');
     await t.pumpWidget(const SizedBox());
     await settleNotebooks(tester: t, under: dir);
     await t.runAsync(() async {

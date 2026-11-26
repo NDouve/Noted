@@ -8,6 +8,7 @@ import 'dart:io';
 import 'package:noted/src/device_storage.dart';
 
 import 'support/io_trace.dart';
+import 'support/test_watchdog.dart';
 
 /// `flutter test` reports Android as the platform; run tests as desktop
 /// unless one picks a platform (see [testsDefaultToDesktop]).
@@ -19,5 +20,8 @@ Future<void> testExecutable(FutureOr<void> Function() testMain) async {
   // Global, not a zone override: the tests run in zones of the test runner's,
   // which a zone override set here does not reach.
   if (ioTraceEnabled) IOOverrides.global = TracingIoOverrides();
+  // Fails a test blocked in a synchronous wait, which the timeout can't (see
+  // test_watchdog.dart).
+  await startTestWatchdog();
   await testMain();
 }
