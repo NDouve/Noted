@@ -1333,6 +1333,8 @@ class _Sim {
   final Map<String, ({String page, Map<String, Uint8List> files})> savedTemplates = {};
   // The titles of the pages whose stray folder the app said it left where it was (0150).
   final List<({String title, String place})> declinedAt = [];
+  // `<page id>|<folder>` of the strays the app had a reason to leave, as the settle left them.
+  final Set<String> declinedStrays = {};
 
   // Whether the app said, for page [id] by its title, that it left the folder where it was.
   // The app names a stray folder's page by its title and its place, once for each folder.
@@ -1685,7 +1687,7 @@ class _Sim {
         for (final other in _locs)
           if (other != loc &&
               (File(_assetPathIn(other, e.key)).existsSync() || File(_stubOf(_assetPathIn(other, e.key))).existsSync()) &&
-              (_mayStillBePage(other, id) || _declinedFor(id, other)))
+              (_mayStillBePage(other, id) || declinedStrays.contains('$id|$other') || _declinedFor(id, other)))
             other,
       ].isNotEmpty;
       if (!f.existsSync() && declined) continue;
@@ -1704,7 +1706,7 @@ class _Sim {
         final left = File(_assetPathIn(other, e.key));
         // A stray that 0150 declines (a file there may still be the page) is not a failure,
         // nor a copy whose name is taken at the page's place by the same file (a paste).
-        if (left.existsSync() && pageLoc(id) != null && !_mayStillBePage(other, id) && !_declinedFor(id, other) && !f.existsSync()) {
+        if (left.existsSync() && pageLoc(id) != null && !_mayStillBePage(other, id) && !declinedStrays.contains('$id|$other') && !_declinedFor(id, other) && !f.existsSync()) {
           out.add(
             'the attachment ${_base(p)} of page $id is left at the old place; ${other == drivePath ? 'drive' : 'Sub'} holds '
             '${[for (final x in Directory(other).listSync(followLinks: false)) _base(x.path)]}, unreadable ${[for (final u in nb.unreadable) '${_base(u.path)} ${u.reason}']}',
@@ -1798,6 +1800,21 @@ class _Sim {
       }
     } finally {
       Notebook.strayQuiet = quiet;
+    }
+    // What the app declined to move (0150: a file it could not read, such as a leftover
+    // of a replace, in the folder counts as the page), judged now: the reload that the
+    // verify makes puts the leftovers back and so removes the reason.
+    for (final k in assets.keys) {
+      final id = k.substring(0, k.indexOf('|'));
+      final loc = pageLoc(id);
+      if (loc == null) continue;
+      for (final o in _locs) {
+        if (o == loc) continue;
+        final p = _assetPathIn(o, k);
+        if ((File(p).existsSync() || File(_stubOf(p)).existsSync()) && _mayStillBePage(o, id)) {
+          declinedStrays.add('$id|$o');
+        }
+      }
     }
     await nb.flush();
   }
@@ -2172,6 +2189,16 @@ class _Sim {
     // version lands (the rest of the settle is what it always was).
     await settleAttachments();
     await settleStrays();
+    // The pages opened above are looked at again, as a round of the settle does, so that a
+    // copy that landed meanwhile is merged into them before the live pages are compared.
+    phase = 'settle: after attachments';
+    await nb.scanLocationForTest('');
+    await nb.discoveryIdle;
+    for (final file in pageFiles()) {
+      await nb.checkFile(file.path);
+    }
+    await nb.flush();
+    await nb.discoveryIdle;
   }
 
   List<String> summary(Notebook n) {
