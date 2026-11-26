@@ -125,18 +125,31 @@ class FakeCloudFolderChannel implements CloudFolderChannel {
   /// The resolves made while no version temp held the version's bytes.
   final List<String> resolveViolations = [];
 
+  // A temp that can not be read at the moment (a sharing violation) is not
+  // proof that none holds the bytes: it counts as holding them.
   bool _tempHolds(String path, List<int> bytes) {
     final f = File(path);
     final prefix = '.${f.uri.pathSegments.last}.noted-version-';
+    final List<FileSystemEntity> listed;
     try {
-      for (final e in f.parent.listSync(followLinks: false)) {
-        final n = e.uri.pathSegments.last;
-        if (e is! File || !n.startsWith(prefix) || !n.endsWith('.tmp')) continue;
-        final have = e.readAsBytesSync();
-        if (have.length == bytes.length && [for (var i = 0; i < have.length; i++) have[i] == bytes[i]].every((x) => x)) return true;
-      }
+      listed = f.parent.listSync(followLinks: false);
     } on FileSystemException {
-      return false;
+      return true;
+    }
+    for (final e in listed) {
+      final n = e.uri.pathSegments.last;
+      if (e is! File || !n.startsWith(prefix) || !n.endsWith('.tmp')) continue;
+      for (var attempt = 0; ; attempt++) {
+        try {
+          final have = e.readAsBytesSync();
+          if (have.length == bytes.length && [for (var i = 0; i < have.length; i++) have[i] == bytes[i]].every((x) => x)) return true;
+          break;
+        } on FileSystemException {
+          if (!e.existsSync()) break; // removed meanwhile: not a holder
+          if (attempt >= 20) return true;
+          sleep(const Duration(milliseconds: 5));
+        }
+      }
     }
     return false;
   }

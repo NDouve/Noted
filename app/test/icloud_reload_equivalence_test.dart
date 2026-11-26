@@ -79,6 +79,8 @@ const List<String> _killKinds = [
   'saveNew:beforePublish',
   'server:beforePublish',
   'server:beforeAsideDelete',
+  'landing:equal', // a version equal to the file, not yet resolved
+  'landing:reread', // resolved, the holder not yet read again
 ];
 
 /// What each kill kind needs to happen at least once in a sequence.
@@ -89,6 +91,8 @@ const Map<String, List<String>> _feeders = {
   'landing:published': ['daemonConflict', 'landAll'],
   'landing:verified': ['daemonConflict', 'landAll'],
   'landing:resolved': ['daemonConflict', 'landAll'],
+  'landing:equal': ['daemonEqualConflict', 'landAll'],
+  'landing:reread': ['daemonConflict', 'landAll'],
   'replace:beforeMoveAside': ['appEdit', 'appEdit'],
   'replace:beforePublish': ['appEdit', 'appEdit'],
   'replace:beforeAsideDelete': ['appEdit', 'appEdit'],
@@ -726,7 +730,13 @@ class _Sim {
   void channelHooks() {
     w.channel.onVersions = (path, temps) => point('versionTemp');
     f.landingStep = (step, path) async => point('landing:$step');
+    // What the daemon or another device does inside the resolve call (t3c).
+    w.channel.onResolve = (path, id) => resolveActs.remove(id)?.call();
   }
+
+  /// One-shot replaces armed by the conflict ops, run when the landing resolves
+  /// the version with that id.
+  final Map<String, void Function()> resolveActs = {};
 
   void _wrap() {
     unregisterCoordinator(drivePath);
@@ -991,6 +1001,8 @@ class _Sim {
         await daemonEdit();
       case 'daemonConflict':
         await daemonConflict();
+      case 'daemonEqualConflict':
+        await daemonEqualConflict();
       case 'daemonEvict':
         await daemonEvict();
       case 'daemonMaterialize':
@@ -1146,14 +1158,62 @@ class _Sim {
       return;
     }
     daemonWrite(file, writePage(current.insertNode(box(a))));
-    final id = w.channel.addVersion(
-      file.path,
-      utf8.encode(writePage(current.insertNode(box(b)))),
-    );
+    final versionText = writePage(current.insertNode(box(b)));
+    final id = w.channel.addVersion(file.path, utf8.encode(versionText));
     versions.add((path: file.path, id: id));
     claim(a, 'a daemon replace of ${_base(file.path)}');
     claim(b, 'a conflict version of ${_base(file.path)}');
     versionOfMarker[b] = versions.last;
+    if (rnd.nextBool()) {
+      // Inside the landing's resolve the copy of the version is replaced by a
+      // page without the version's marker (and with one of its own): the
+      // version is let go only once a file holds its bytes.
+      final c = marker();
+      resolveActs[id] = () {
+        final copy = _copyHolding(file, versionText);
+        if (copy == null) return;
+        daemonWrite(copy, writePage(current.insertNode(box(c))));
+        claim(c, 'a daemon replace of the copy of a version of ${_base(file.path)}');
+      };
+    }
+    if (rnd.nextBool()) await w.channel.emit('changed', {'path': file.path});
+  }
+
+  /// The copy (`<stem>-icloud-<h>.canvas`) of [file] that holds [text], if one does.
+  File? _copyHolding(File file, String text) {
+    final hash = contentHash(utf8.encode(text));
+    final stem = _base(file.path).replaceAll('.canvas', '');
+    for (final n in [8, 16]) {
+      final copy = File('${file.parent.path}/$stem-icloud-${hash.substring(0, n)}.canvas');
+      if (copy.existsSync() && readText(copy) == text) return copy;
+    }
+    return null;
+  }
+
+  /// A version equal to the file. Inside the landing's resolve the file may be
+  /// replaced by an earlier page, without the newest marker it holds.
+  Future<void> daemonEqualConflict() async {
+    final file = pick((f) => true);
+    if (file == null) return;
+    final text = readText(file);
+    if (text == null) return;
+    final id = w.channel.addVersion(file.path, utf8.encode(text));
+    versions.add((path: file.path, id: id));
+    if (rnd.nextBool()) {
+      final held = [
+        for (final m in RegExp('m$seed-\\d{4}').allMatches(text))
+          if (durable.containsKey(m.group(0))) m.group(0)!,
+      ]..sort();
+      if (held.isNotEmpty) {
+        final newest = held.last;
+        resolveActs[id] = () {
+          // Only a file still as the version is: another state is not "the
+          // earlier base" of anything.
+          if (readText(file) != text) return;
+          daemonWrite(file, writePage(readPage(text).removeNode(box(newest).id)));
+        };
+      }
+    }
     if (rnd.nextBool()) await w.channel.emit('changed', {'path': file.path});
   }
 
@@ -1500,6 +1560,10 @@ class _Sim {
     }
     checkSegment();
     problems.addAll(violations);
+    // t3c: no version was resolved while no temp held its bytes.
+    for (final r in w.channel.resolveViolations) {
+      problems.add('resolved without a temp holding the version: $r');
+    }
     if (problems.isNotEmpty) {
       fail(
         'seed $seed (kill at $killKind #$killNth) failed:\n${problems.take(12).join('\n')}\nsteps: ${log.join(', ')}${_lostTrail()}',
@@ -1565,6 +1629,7 @@ List<String> _plan(_Sim s) {
     'daemonEdit',
     'daemonConflict',
     'daemonConflict',
+    'daemonEqualConflict',
     'daemonEvict',
     'daemonEvict',
     'daemonMaterialize',
