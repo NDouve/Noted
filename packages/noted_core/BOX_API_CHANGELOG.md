@@ -8,6 +8,14 @@ version.
 
 Versions are listed newest first.
 
+## 0.18 — 2026-11-26
+- Box export (noted_canvas, `export_format.dart`): `ExportFormat(id, label, extension)` with the ids `text`, `markdown`, `html`, `png`, `svg` and `original`; `jpeg` and `pdf` are host-reserved ids (the host derives them from a module's `png` and drops them from a module's list; they are never passed to a module's `export`). `ExportedFile(name, bytes)`. `ExportContext` with `attachments`, `size`, `pixelRatio` and `renderView()` (the host's raster of the box's read-only view, light theme, or null).
+- On `BoxModule`: `exportFormats(D data)` (default none, which turns Export off for the box), `export(D data, ExportFormat format, ExportContext context)` (default null), and the untyped `hostExportFormats` and `hostExport`.
+- On `BoxContext`: `bool get offscreen` (default false in `BoxBinding.offscreen`): the view is drawn only to be rasterised for an export, so a module keeps it out of its live-editor registries (the note and AI modules keep it out of `_live`). **Implementers of `BoxContext` must add the getter** (a module that wraps another box's context forwards it).
+- Additive, and no module has to use it. Under 0.x `canHost` matches the exact version, so every 0.17 module must be rebuilt for 0.18. `BoxCodec` is unchanged, so the MCP server is unaffected. Decided by the PM under delegated authority; run 2026-11-25-01, task 6 (design t4, build steps 1 and 2).
+
+Host-only (not the Box API), run 2026-11-25-01, task 6: the canvas command `canvas.exportBox` and `PageCanvas.onExportBox` (the command exists only while the handler is set). In noted_core, `noteToMarkdown(export: true)`, `noteToHtml`, `exportLinkTarget` and `markdownLinkTarget`.
+
 ## 0.17 — 2026-11-26
 - `DownloadingAttachmentStore` (noted_canvas, beside `VerifyingAttachmentStore`): `download(fileName)` (`AttachmentDownload`: `onDevice`, `downloading`, `failed`; cached, never notifies synchronously), `downloadError(fileName)` and `retryDownload(fileName)`. Optional: a module uses it when the store has it, and a plain store keeps "Still syncing". `AttachmentState` gets no new value. The attachments module reads it to show "Downloading…", "Can't download" and Retry for a file that is not downloaded yet.
 - Additive, and no module has to use it. Under 0.x `canHost` matches the exact version, so every 0.16 module must be rebuilt for 0.17. Decided by the PM under delegated authority; run 2026-11-25-01, task 5a (design t2a).
