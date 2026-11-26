@@ -74,6 +74,11 @@ class AttachmentCopy {
   /// Targets that were left alone because they were changing (a sync client
   /// still writing) or could not be read. Their sources are not deleted.
   final List<String> stillChanging = [];
+
+  /// Files (a source, a target, a leftover) that are not downloaded: nothing was
+  /// read, copied or written in their place. The caller asks for each through
+  /// `Notebook.askDownload` and refuses or stops the copy (t2a).
+  final List<String> notDownloaded = [];
 }
 
 /// A file found at a hash name that failed its hash, kept aside next to it.
@@ -123,9 +128,13 @@ String? attachmentNameHash(String fileName) => _hashName.firstMatch(fileName)?.g
 
 /// What [checkAttachmentFile] found.
 class FileCheck {
-  const FileCheck(this.state, {this.found, this.bytes});
+  const FileCheck(this.state, {this.found, this.bytes, this.notDownloaded = false});
 
   final AttachmentState state;
+
+  /// The file is there (or its stub is) but its data is not on this device:
+  /// nothing was read. [state] is then `syncing`.
+  final bool notDownloaded;
 
   /// The length and hash of what was read, when [state] is damaged.
   final ContentIdentity? found;
@@ -162,15 +171,25 @@ Future<FileCheck> checkAttachmentFile(
   bool keepBytes = false,
 }) async {
   try {
+    // Not downloaded (or only its stub): never read, never absent. Checked
+    // before any stat.
+    if (notDownloaded(file.path)) {
+      return const FileCheck(AttachmentState.syncing, notDownloaded: true);
+    }
     final before = await file.stat();
     if (before.type != FileSystemEntityType.file || before.size < size) {
       return const FileCheck(AttachmentState.syncing);
     }
     final builder = keepBytes ? BytesBuilder(copy: false) : null;
+    final opened = await openStoredRead(file.path);
+    if (opened is! StoredOpened<Stream<List<int>>>) {
+      final refused = (opened as StoredRefused<Stream<List<int>>>).result;
+      return FileCheck(AttachmentState.syncing, notDownloaded: refused is StoredNotDownloaded);
+    }
     final hash = await contentHashOfStream(
       builder == null
-          ? file.openRead()
-          : file.openRead().map((c) {
+          ? opened.value
+          : opened.value.map((c) {
               builder.add(c);
               return c;
             }),
@@ -186,10 +205,39 @@ Future<FileCheck> checkAttachmentFile(
     }
     if (hash == expectedHash) return FileCheck(AttachmentState.ok, bytes: bytes);
     return FileCheck(AttachmentState.damaged, found: ContentIdentity(before.size, hash));
+  } on StorageBusy catch (e) {
+    // Evicted while it was read.
+    return FileCheck(AttachmentState.syncing, notDownloaded: e.reason == StorageBusyReason.dataless);
   } on FileSystemException {
     return const FileCheck(AttachmentState.syncing);
   }
 }
+
+// The open file at [path], read through the routed read. A file that is not
+// downloaded is a [StorageBusy] (`dataless`), anything else a
+// [FileSystemException].
+Future<RandomAccessFile> _openStored(String path) async {
+  final r = await openStoredFile(path);
+  if (r is StoredOpened<RandomAccessFile>) return r.value;
+  throw _refusal((r as StoredRefused<RandomAccessFile>).result, path);
+}
+
+// The bytes of [path] as a stream, through the routed read; refusals as for
+// [_openStored].
+Future<Stream<List<int>>> _readStream(String path) async {
+  final r = await openStoredRead(path);
+  if (r is StoredOpened<Stream<List<int>>>) return r.value;
+  throw _refusal((r as StoredRefused<Stream<List<int>>>).result, path);
+}
+
+FileSystemException _refusal(StoredRead r, String path) => switch (r) {
+  StoredNotDownloaded() => StorageBusy(StorageBusyReason.dataless, [path]),
+  StoredFailed(:final error) => error,
+  _ => FileSystemException('The file is not there', path),
+};
+
+/// Whether [e] is a refusal because a file is not downloaded.
+bool _isDataless(Object e) => e is StorageBusy && e.reason == StorageBusyReason.dataless;
 
 /// What [setAsideDamaged] did: [name] is the new name when the damaged file
 /// was set aside; otherwise null, and [leftAt] says which file name it is
@@ -282,6 +330,7 @@ Future<bool> writeNewAttachmentFile(File target, Uint8List bytes, String hash) a
 Future<String?> keepGoodCopy(Directory dir, String name, Uint8List bytes) async {
   final sep = Platform.pathSeparator;
   final hash = contentHash(bytes);
+  String? heldBack;
   try {
     if (await dir.exists()) {
       await for (final e in dir.list(followLinks: false)) {
@@ -289,6 +338,7 @@ Future<String?> keepGoodCopy(Directory dir, String name, Uint8List bytes) async 
         if (e is! File || !n.startsWith('$name$keptMarker') || n.endsWith('.tmp')) continue;
         final c = await checkAttachmentFile(e, hash, bytes.length);
         if (c.state == AttachmentState.ok) return n;
+        if (c.notDownloaded) heldBack ??= e.path;
       }
     }
   } on StorageBusy catch (e) {
@@ -296,6 +346,9 @@ Future<String?> keepGoodCopy(Directory dir, String name, Uint8List bytes) async 
   } on FileSystemException catch (e) {
     debugPrint('Looking for a kept copy of $name failed: $e');
   }
+  // A kept copy that is not downloaded may hold these very bytes: no second one
+  // is written. The caller asks for it and waits (a refusal, not "no copy").
+  if (heldBack != null) throw StorageBusy(StorageBusyReason.dataless, [heldBack]);
   final keptName = '$name$keptMarker${DateTime.now().microsecondsSinceEpoch}-${_counter++}';
   try {
     if (await writeNewAttachmentFile(File('${dir.path}$sep$keptName'), bytes, hash)) return keptName;
@@ -314,7 +367,13 @@ Future<String?> keepGoodCopy(Directory dir, String name, Uint8List bytes) async 
 /// mid-write when the file was set aside, and finished). The copy is moved
 /// with [publishExclusive], never over anything. Returns whether one was put
 /// back.
-Future<bool> restoreKeptCopy(Directory dir, String fileName, String hash, int size) async {
+Future<bool> restoreKeptCopy(
+  Directory dir,
+  String fileName,
+  String hash,
+  int size, {
+  List<String>? notDownloaded,
+}) async {
   final sep = Platform.pathSeparator;
   final target = '${dir.path}$sep$fileName';
   try {
@@ -327,6 +386,10 @@ Future<bool> restoreKeptCopy(Directory dir, String fileName, String hash, int si
       if (!rest.startsWith(damagedMarker) && !rest.startsWith(keptMarker)) continue;
       if (rest.endsWith('.tmp')) continue;
       final c = await checkAttachmentFile(e, hash, size);
+      if (c.notDownloaded) {
+        notDownloaded?.add(e.path); // not used while it is not here
+        continue;
+      }
       if (c.state == AttachmentState.ok && await publishExclusive(e, target)) return true;
     }
   } on StorageBusy catch (e) {
@@ -361,7 +424,10 @@ const _chunk = 64 * 1024;
 /// `<hash>.<ext>.tmp`, which no attachment is called, is an unfinished write:
 /// when it holds its hash it lands as `<hash>.<ext>`. Any other `.tmp` is not
 /// an attachment.
-Future<String?> attachmentNameToTake(File f, String raw) async {
+///
+/// An unfinished write that is not downloaded is not read: it is left out, and
+/// with [r] its path is added to [AttachmentCopy.notDownloaded].
+Future<String?> attachmentNameToTake(File f, String raw, [AttachmentCopy? r]) async {
   // A file a compare-and-delete set aside and never finished with: not an
   // attachment to take along; the sweep puts it back (sweepAttachmentLeftovers).
   if (raw.endsWith(asideSuffix) || raw.endsWith(verifiedSuffix)) return null;
@@ -370,7 +436,13 @@ Future<String?> attachmentNameToTake(File f, String raw) async {
   final stripped = raw.substring(0, raw.length - '.tmp'.length);
   final m = _hashName.firstMatch(stripped);
   if (m != null && m.group(2) != null) {
-    return await contentHashOfStream(f.openRead()) == m.group(1) ? stripped : null;
+    try {
+      return await contentHashOfStream(await _readStream(f.path)) == m.group(1) ? stripped : null;
+    } on StorageBusy catch (e) {
+      if (!_isDataless(e)) rethrow;
+      r?.notDownloaded.add(f.path);
+      return null;
+    }
   }
   return _hashName.firstMatch(raw) != null ? raw : null;
 }
@@ -413,9 +485,14 @@ Future<void> sweepAttachmentLeftovers(Directory dir, AttachmentCopy r) async {
     final target = '${dir.path}$sep$base';
     try {
       final hm = _hashName.firstMatch(base);
-      final complete = hm != null && await contentHashOfStream(f.openRead()) == hm.group(1);
+      final complete = hm != null && await contentHashOfStream(await _readStream(f.path)) == hm.group(1);
       if (complete) {
         if (FileSystemEntity.typeSync(target, followLinks: false) == FileSystemEntityType.notFound) {
+          // Only a stub stands at the target: it is taken, and not ours to read.
+          if (hasStub(target)) {
+            r.notDownloaded.add(target);
+            continue;
+          }
           if (await publishExclusive(f, target)) continue;
         }
         if (FileSystemEntity.typeSync(target, followLinks: false) == FileSystemEntityType.file &&
@@ -430,6 +507,12 @@ Future<void> sweepAttachmentLeftovers(Directory dir, AttachmentCopy r) async {
         }
       }
     } on StorageBusy catch (e) {
+      if (_isDataless(e)) {
+        // The leftover or its target is not downloaded: neither is read, and the
+        // caller asks for it.
+        r.notDownloaded.addAll(e.paths);
+        continue;
+      }
       // Left where it is, and reported below; no other way of putting it back.
       debugPrint('The folder is busy; leaving the leftover ${f.path}: $e');
     } on FileSystemException catch (e) {
@@ -452,10 +535,13 @@ Future<Uint8List> _readFully(RandomAccessFile f) async {
 }
 
 /// Whether the two files hold the same bytes, compared in fixed-size chunks.
+///
+/// A file that is not downloaded is not read: this throws a [StorageBusy]
+/// (`dataless`) naming it.
 Future<bool> sameContent(File a, File b) async {
-  final ra = await a.open();
+  final ra = await _openStored(a.path);
   try {
-    final rb = await b.open();
+    final rb = await _openStored(b.path);
     try {
       if (await ra.length() != await rb.length()) return false;
       while (true) {
@@ -506,7 +592,14 @@ Future<void> copyAttachmentTree(Directory from, Directory to, AttachmentCopy r, 
       continue;
     }
     if (e is! File) continue;
-    final name = await attachmentNameToTake(e, raw);
+    // A stub stands for a file that is not here: it is asked for, never copied
+    // as a file.
+    final stands = stubTargetName(raw);
+    if (stands != null && stands != '.' && stands != '..' && !stands.contains(RegExp(r'[\\/]'))) {
+      r.notDownloaded.add('${from.path}$sep$stands');
+      continue;
+    }
+    final name = await attachmentNameToTake(e, raw, r);
     if (name == null) continue;
     await copyAttachmentFile(e, '${to.path}$sep$name', name, r);
   }
@@ -522,16 +615,38 @@ Future<void> copyAttachmentFile(File src, String target, String name, Attachment
     await _settleExisting(src, target, name, type, r, settleOnce: settleOnce);
     return;
   }
+  // Only a stub stands at the target: the file is there, not downloaded.
+  if (hasStub(target)) {
+    r.notDownloaded.add(target);
+    return;
+  }
   final tmp = File('$target.${DateTime.now().microsecondsSinceEpoch}-${_counter++}.tmp');
   try {
-    await _streamCopy(src, tmp);
+    try {
+      await _streamCopy(src, tmp);
+    } on StorageBusy catch (e) {
+      // The source is not downloaded: nothing was copied, and the caller asks.
+      if (!_isDataless(e)) rethrow;
+      r.notDownloaded.add(src.path);
+      return;
+    }
     final written = await tmp.length();
     final writtenHash = await contentHashOfStream(tmp.openRead());
     if (attachmentBeforePublishHook != null) await attachmentBeforePublishHook!(target);
     if (await _publish(tmp, target)) {
       r.created.add(target);
       r.createdIdentity[target] = ContentIdentity(written, writtenHash);
-      if (!await sameContent(src, File(target))) {
+      final bool same;
+      try {
+        same = await sameContent(src, File(target));
+      } on StorageBusy catch (e) {
+        if (!_isDataless(e)) rethrow;
+        // Evicted since it was copied: what was published stays in `created`, for
+        // the caller's rollback, and is not counted as verified.
+        r.notDownloaded.addAll(e.paths);
+        return;
+      }
+      if (!same) {
         // Ours, and wrong: take it away again and let the move fail.
         r.created.removeLast();
         r.createdIdentity.remove(target);
@@ -590,9 +705,21 @@ Future<void> _settleExisting(
       r.verified.add(CopiedFile(src, t));
       return;
     }
+  } on StorageBusy catch (e) {
+    if (!_isDataless(e)) rethrow;
+    // The source or the target is not downloaded: neither is read.
+    r.notDownloaded.addAll(e.paths);
+    return;
   } on FileSystemException {
     // An error reading the source is the move's own failure: it propagates.
-    final probe = await src.open();
+    final RandomAccessFile probe;
+    try {
+      probe = await _openStored(src.path);
+    } on StorageBusy catch (e) {
+      if (!_isDataless(e)) rethrow;
+      r.notDownloaded.addAll(e.paths);
+      return;
+    }
     try {
       await probe.read(1);
     } finally {
@@ -610,7 +737,15 @@ Future<void> _settleExisting(
   }
   // Only when the source provably holds the hash in the name is the target
   // judged against it; otherwise both are kept.
-  if (await contentHashOfStream(src.openRead()) != hash) {
+  final String srcHash;
+  try {
+    srcHash = await contentHashOfStream(await _readStream(src.path));
+  } on StorageBusy catch (e) {
+    if (!_isDataless(e)) rethrow;
+    r.notDownloaded.addAll(e.paths);
+    return;
+  }
+  if (srcHash != hash) {
     r.differing.add(target);
     return;
   }
@@ -618,6 +753,10 @@ Future<void> _settleExisting(
   // the read, or a read error, is.
   final check = await checkAttachmentFile(t, hash, 0);
   final found = check.found;
+  if (check.notDownloaded) {
+    r.notDownloaded.add(target);
+    return;
+  }
   if (check.state == AttachmentState.syncing) {
     r.stillChanging.add(target);
     return;
@@ -654,7 +793,7 @@ Future<void> _settleExisting(
 Future<void> _streamCopy(File src, File dst) async {
   final out = await dst.open(mode: FileMode.write);
   try {
-    await for (final chunk in src.openRead()) {
+    await for (final chunk in await _readStream(src.path)) {
       await out.writeFrom(chunk);
     }
     await out.flush();

@@ -39,6 +39,9 @@ String safeOpenFileName(String name) {
   return safe;
 }
 
+/// The notice shown when a file that is not downloaded yet is opened.
+const String downloadingOpenNotice = 'Downloading. It will open once it is here.';
+
 /// The notice shown when a file too large to embed goes to the folder.
 const String overLimitNotice =
     'Files over 5 MB are kept in the folder beside the page, not in the page file.';
@@ -50,7 +53,7 @@ const String overLimitNotice =
 /// kept in [recoveryDirectory] instead, under `<page id>.assets/`, and read
 /// from there until the notebook moves it into place with the recovered
 /// page.
-class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStore {
+class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStore, DownloadingAttachmentStore {
   PageAttachments({
     required this.pageFolder,
     required this.pageId,
@@ -64,10 +67,14 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
     this.readOnly = false,
     bool Function()? readOnlyNow,
     this.mutate,
+    this.requestDownload,
+    DateTime Function()? clock,
   }) : _storage = storage,
        _watch = watch,
-       _readOnlyNow = readOnlyNow {
+       _readOnlyNow = readOnlyNow,
+       _clock = clock ?? DateTime.now {
     _startWatching();
+    if (requestDownload != null) unawaited(_scan());
   }
 
   /// The page is in a pull-only location: reading writes nothing. A missing
@@ -168,6 +175,188 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
   void filesChanged() {
     if (_disposed) return;
     _startWatching();
+    if (requestDownload != null) unawaited(_scan());
+    notifyListeners();
+  }
+
+  // --- Files that are not downloaded (R5.5, 0190) ------------------------------
+
+  /// Asks the system to download the file at a path (null: no platform to ask,
+  /// as on Windows, where only a stub can be dataless).
+  final DownloadAsk? requestDownload;
+  final DateTime Function() _clock;
+
+  /// How often a name that is still not here is asked for again.
+  static const Duration askEvery = Duration(seconds: 30);
+
+  // What the last scan (and the checks since) found not downloaded, by name in
+  // the assets folder.
+  final Map<String, _Download> _downloads = {};
+  // Names whose files are known to be on this device (the last scan's listing,
+  // and what single checks found since), so `download` makes no call for them.
+  final Set<String> _seen = {};
+  Future<void>? _scanning;
+  bool _scanQueued = false;
+
+  /// Lists the assets folder again and asks for what is not downloaded (a scan
+  /// runs at construction and on each [filesChanged]; the notebook calls this at
+  /// each change event of the open page). One runs at a time, with at most one
+  /// queued behind it.
+  void rescan() {
+    if (_disposed) return;
+    unawaited(_scan());
+  }
+
+  /// Completes when no scan is running or queued (tests).
+  @visibleForTesting
+  Future<void> get scanIdle async {
+    while (_scanning != null) {
+      await _scanning;
+    }
+  }
+
+  Future<void> _scan() {
+    if (requestDownload == null || _disposed) return Future<void>.value();
+    if (_scanning != null) {
+      _scanQueued = true;
+      return _scanning!;
+    }
+    final done = () async {
+      try {
+        do {
+          _scanQueued = false;
+          await Future<void>.delayed(Duration.zero);
+          if (_disposed) return;
+          _scanOnce();
+        } while (_scanQueued && !_disposed);
+      } finally {
+        _scanning = null;
+      }
+    }();
+    _scanning = done;
+    return done;
+  }
+
+  // The names that stand for something in the assets folder: a hash name, a
+  // kept or damaged copy, a temporary file.
+  static bool _isOurName(String n) =>
+      isAttachmentFileName(n) || n.contains(keptMarker) || isDamagedCopyName(n) || n.endsWith('.tmp');
+
+  static final RegExp _sep = RegExp(r'[\\/]');
+
+  void _scanOnce() {
+    // Metadata only: the scan reads nothing. A folder that is not downloaded is
+    // asked for and not entered.
+    final walk = folderWalk(folder.path);
+    final prefix = '${folder.path}${Platform.pathSeparator}';
+    String rel(String p) => p.startsWith(prefix) ? p.substring(prefix.length).replaceAll(r'\', '/') : p;
+    final stubTargets = <String>{
+      for (final s in walk.stubs)
+        '${s.substring(0, s.lastIndexOf(_sep))}${Platform.pathSeparator}'
+            '${stubTargetName(s.substring(s.lastIndexOf(_sep) + 1))}',
+    };
+    final found = <String, String>{}; // name -> path to ask for
+    for (final p in walk.notDownloaded) {
+      final base = p.substring(p.lastIndexOf(_sep) + 1);
+      if (stubTargets.contains(p) && !_isOurName(base)) continue; // N8
+      found[rel(p)] = p;
+    }
+    _seen
+      ..clear()
+      ..addAll(walk.files.map(rel));
+    var changed = false;
+    // Each scan replaces what was known: a name that is gone is dropped.
+    for (final k in _downloads.keys.toList()) {
+      if (!found.containsKey(k)) {
+        _downloads.remove(k);
+        changed = true;
+      }
+    }
+    final now = _clock();
+    for (final e in found.entries) {
+      var d = _downloads[e.key];
+      if (d == null) {
+        d = _downloads[e.key] = _Download();
+        changed = true;
+      }
+      final asked = d.asked;
+      if (asked == null || now.difference(asked) >= askEvery) _ask(e.key, e.value, d);
+    }
+    if (changed) notifyListeners();
+  }
+
+  // Asks for [path]; [d] is its entry. The answer decides the state: a message
+  // is a refusal ("failed"), nothing is a request the system took.
+  void _ask(String name, String path, _Download d) {
+    final ask = requestDownload;
+    if (ask == null) return;
+    d.asked = _clock();
+    unawaited(
+      Future<String?>.sync(() => ask(path)).then<void>(
+        (message) => _answered(name, d, message),
+        onError: (Object e) => _answered(name, d, '$e'),
+      ),
+    );
+  }
+
+  void _answered(String name, _Download d, String? message) {
+    if (_disposed || !identical(_downloads[name], d)) return;
+    final failed = message != null;
+    if (d.failed == failed && d.error == message) return;
+    d.failed = failed;
+    d.error = message;
+    notifyListeners();
+  }
+
+  // A not-downloaded file met by a read or a check: recorded (and asked for) like
+  // one the scan found.
+  void _meet(String name, String path) {
+    if (requestDownload == null || _disposed) return;
+    _seen.remove(name);
+    var d = _downloads[name];
+    final fresh = d == null;
+    d ??= _downloads[name] = _Download();
+    final asked = d.asked;
+    if (asked == null || _clock().difference(asked) >= askEvery) _ask(name, path, d);
+    if (fresh) scheduleMicrotask(() => _disposed ? null : notifyListeners());
+  }
+
+  // [_meet] for a path in the assets folder (or the recovery folder).
+  void _meetPath(String path) => _meet(path.substring(path.lastIndexOf(_sep) + 1), path);
+
+  @override
+  AttachmentDownload download(String fileName) {
+    if (requestDownload == null || _disposed) return AttachmentDownload.onDevice;
+    final d = _downloads[fileName];
+    if (d != null) return d.failed ? AttachmentDownload.failed : AttachmentDownload.downloading;
+    if (_seen.contains(fileName) || !isAttachmentFileName(fileName)) return AttachmentDownload.onDevice;
+    // Not seen by a scan: this one file is checked, and asked for in a microtask
+    // (never a notification from here).
+    final path = _in(folder, fileName).path;
+    if (notDownloaded(path)) {
+      final d2 = _downloads[fileName] = _Download();
+      scheduleMicrotask(() {
+        if (_disposed || !identical(_downloads[fileName], d2)) return;
+        _ask(fileName, path, d2);
+        notifyListeners();
+      });
+      return AttachmentDownload.downloading;
+    }
+    _seen.add(fileName);
+    return AttachmentDownload.onDevice;
+  }
+
+  @override
+  String? downloadError(String fileName) => _downloads[fileName]?.error;
+
+  @override
+  void retryDownload(String fileName) {
+    if (requestDownload == null || _disposed) return;
+    final d = _downloads[fileName];
+    if (d == null) return;
+    d.failed = false;
+    d.error = null;
+    _ask(fileName, _in(folder, fileName).path, d);
     notifyListeners();
   }
 
@@ -254,8 +443,17 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
       if (say) notify('A file in this page\'s folder $why. A good copy was kept as "$kept" beside it.');
     }
 
+    // A target that is not downloaded (or only its stub) is neither read nor
+    // replaced, and no `.kept-` copy or recovery copy stands in for it: the write
+    // waits (a refusal, not "no copy"); the file is asked for.
+    void refuseNotDownloaded(String path) {
+      _meetPath(path);
+      throw StorageBusy(StorageBusyReason.dataless, [path]);
+    }
+
     Future<void> into(Directory d) async {
       final target = _in(d, name);
+      if (notDownloaded(target.path)) refuseNotDownloaded(target.path);
       // Made in its own turn too: a held folder gets no assets folder.
       await _mutateIn(d, () => createFolderCoordinated(d));
       String? damagedKeptAs;
@@ -267,6 +465,7 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
         }
         final c = await checkAttachmentFile(target, hash, bytes.length);
         if (c.state == AttachmentState.ok) return;
+        if (c.notDownloaded) refuseNotDownloaded(target.path);
         if (c.state == AttachmentState.syncing) {
           await keepBeside(d, 'is incomplete or still changing');
           return;
@@ -311,14 +510,17 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
       if (damagedKeptAs != null) {
         notify('A damaged copy of a file in this page\'s folder was kept as "$damagedKeptAs".');
       }
-      // Something appeared at the name meanwhile: fine if it is the file.
+      // Something appeared at the name meanwhile: fine if it is the file. A stub
+      // or a file that is not downloaded is not read, and no copy stands in for it.
+      if (notDownloaded(target.path)) refuseNotDownloaded(target.path);
       final now = FileSystemEntity.typeSync(target.path, followLinks: false);
       if (now == FileSystemEntityType.notFound) {
         throw FileSystemException('The file could not be written', target.path);
       }
-      if (now == FileSystemEntityType.file &&
-          (await checkAttachmentFile(target, hash, bytes.length)).state == AttachmentState.ok) {
-        return;
+      if (now == FileSystemEntityType.file) {
+        final again = await checkAttachmentFile(target, hash, bytes.length);
+        if (again.state == AttachmentState.ok) return;
+        if (again.notDownloaded) refuseNotDownloaded(target.path);
       }
       await keepBeside(
         d,
@@ -332,9 +534,11 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
       }
       await into(folder);
       _startWatching();
-    } on StorageBusy {
+    } on StorageBusy catch (e) {
       // The folder's coordination refused: nothing was written, and a refusal
       // is not "the folder is away", so nothing goes to recovery either (C2).
+      // A file that is not downloaded is asked for.
+      if (e.reason == StorageBusyReason.dataless) e.paths.forEach(_meetPath);
       rethrow;
     } on FileSystemException catch (e) {
       final r = recoveryFolder;
@@ -397,8 +601,9 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
     for (final d in [folder, if (!pageFolderOnly) ?recoveryFolder]) {
       final f = _in(d, fileName);
       // A file that is not downloaded (or only its `.<name>.icloud` stub) is
-      // present, never read and never absent: still syncing.
-      if (isDataless(f.path)) {
+      // present, never read and never absent: still syncing, and asked for.
+      if (notDownloaded(f.path)) {
+        _meetPath(f.path);
         first ??= const VerifiedAttachment(AttachmentState.syncing);
         continue;
       }
@@ -416,6 +621,7 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
         out = const VerifiedAttachment(AttachmentState.syncing);
       } else {
         final c = await checkAttachmentFile(f, hash, size, keepBytes: keepBytes);
+        if (c.notDownloaded) _meetPath(f.path); // evicted between the gate and the read
         switch (c.state) {
           case AttachmentState.ok:
             return VerifiedAttachment(
@@ -478,6 +684,7 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
         if (e is! File || !n.startsWith('$fileName$keptMarker') || n.endsWith('.tmp')) continue;
         final c = await checkAttachmentFile(e, hash, size, keepBytes: keepBytes);
         if (c.state == AttachmentState.ok) return (name: n, bytes: c.bytes);
+        if (c.notDownloaded) _meetPath(e.path); // asked for, and not used meanwhile
       }
     } on FileSystemException catch (e) {
       debugPrint('Looking for a kept copy of $fileName failed: $e');
@@ -487,10 +694,13 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
 
   // [restoreKeptCopy] as its own turn; a refusal restores nothing.
   Future<bool> _restoreIn(Directory d, String fileName, String hash, int size) async {
+    final held = <String>[];
     try {
-      return await _mutateIn(d, () => restoreKeptCopy(d, fileName, hash, size));
+      return await _mutateIn(d, () => restoreKeptCopy(d, fileName, hash, size, notDownloaded: held));
     } on _Refused {
       return false;
+    } finally {
+      held.forEach(_meetPath);
     }
   }
 
@@ -511,11 +721,16 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
     if (!isAttachmentFileName(fileName)) return null;
     for (final d in [folder, ?recoveryFolder]) {
       final f = _in(d, fileName);
-      try {
-        if (isDataless(f.path)) continue; // never read: it would download
-        if (await f.exists()) return await f.readAsBytes();
-      } on FileSystemException {
-        // Being written or locked: try the next place.
+      // The routed read: a file that is not downloaded is never read (it would
+      // download), and is asked for; a missing or locked file tries the next place.
+      switch (await readStored(f.path)) {
+        case StoredBytes(:final bytes):
+          return bytes;
+        case StoredNotDownloaded():
+          _meetPath(f.path);
+        case StoredMissing():
+        case StoredFailed():
+          break;
       }
     }
     return null;
@@ -556,17 +771,20 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
       final hash = attachmentNameHash(fileName)!;
       var sawDamaged = false;
       var sawSyncing = false;
+      var sawNotDownloaded = false;
       for (final d in [folder, ?recoveryFolder]) {
         final f = _in(d, fileName);
-        if (isDataless(f.path)) {
-          sawSyncing = true; // not downloaded yet: never read
-          continue;
-        }
-        if (FileSystemEntity.typeSync(f.path, followLinks: false) != FileSystemEntityType.file) continue;
+        final type = FileSystemEntity.typeSync(f.path, followLinks: false);
+        // A stub stands for the file; the check says "not downloaded" before any read.
+        if (type != FileSystemEntityType.file && !(type == FileSystemEntityType.notFound && hasStub(f.path))) continue;
         final c = await checkAttachmentFile(f, hash, 0);
         if (c.state == AttachmentState.ok) {
           file = f;
           break;
+        }
+        if (c.notDownloaded) {
+          sawNotDownloaded = true;
+          _meetPath(f.path);
         }
         if (c.state == AttachmentState.damaged) sawDamaged = true;
         if (c.state == AttachmentState.syncing) sawSyncing = true;
@@ -575,7 +793,9 @@ class PageAttachments extends ChangeNotifier implements PageFolderAttachmentStor
         // Blame the saved copy only when a copy was read and did not match;
         // a locked, unreadable or changing file may be fine in a moment.
         onNotice?.call(
-          sawDamaged && !sawSyncing
+          sawNotDownloaded && requestDownload != null
+              ? downloadingOpenNotice
+              : sawDamaged && !sawSyncing
               ? 'This file can\'t be opened: its saved copy is incomplete or damaged.'
               : 'This file can\'t be opened right now. Try again in a moment.',
         );
@@ -613,4 +833,12 @@ String? _messageOf(Object e) {
   } on Object {
     return null;
   }
+}
+
+// What is known of one file that is not downloaded: when it was last asked for,
+// and whether the system refused (with its message).
+class _Download {
+  DateTime? asked;
+  bool failed = false;
+  String? error;
 }
