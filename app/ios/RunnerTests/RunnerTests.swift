@@ -509,7 +509,7 @@ class RunnerTests: XCTestCase {
   func testThePresenterReportsChangesAndBothPathsOfAMove() {
     let folder = URL(fileURLWithPath: "/d/Notes")
     let seen = Recorder<[String?]>()
-    let presenter = FolderPresenter(url: folder) { path, to in seen.add([path, to]) }
+    let presenter = FolderPresenter(url: folder) { path, to, _ in seen.add([path, to]) }
     XCTAssertEqual(presenter.presentedItemURL, folder)
     presenter.presentedItemDidChange()
     presenter.presentedSubitemDidAppear(at: URL(fileURLWithPath: "/d/Notes/new.canvas"))
