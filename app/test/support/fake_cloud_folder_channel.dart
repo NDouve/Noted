@@ -109,6 +109,38 @@ class FakeCloudFolderChannel implements CloudFolderChannel {
   /// `resolveVersion` throws the error code `coordination`.
   bool resolveFails = false;
 
+  /// `resolveVersion` marks the version resolved, then throws `coordination`
+  /// (a call that timed out after it resolved).
+  bool resolveThenThrows = false;
+
+  /// Run by `resolveVersion` before it marks the version resolved (it may write
+  /// files: a daemon or another device acting inside the call).
+  void Function(String path, String id)? onResolve;
+
+  /// A `resolveVersion` with no version temp of the file, in its folder,
+  /// holding the version's bytes is recorded in [resolveViolations] (a throw
+  /// would be swallowed by the landing's catch).
+  bool tempHeldAtResolve = false;
+
+  /// The resolves made while no version temp held the version's bytes.
+  final List<String> resolveViolations = [];
+
+  bool _tempHolds(String path, List<int> bytes) {
+    final f = File(path);
+    final prefix = '.${f.uri.pathSegments.last}.noted-version-';
+    try {
+      for (final e in f.parent.listSync(followLinks: false)) {
+        final n = e.uri.pathSegments.last;
+        if (e is! File || !n.startsWith(prefix) || !n.endsWith('.tmp')) continue;
+        final have = e.readAsBytesSync();
+        if (have.length == bytes.length && [for (var i = 0; i < have.length; i++) have[i] == bytes[i]].every((x) => x)) return true;
+      }
+    } on FileSystemException {
+      return false;
+    }
+    return false;
+  }
+
   /// A `move` or `delete` intent on a file with unresolved versions is answered
   /// by `pending` instead of `go`, as Swift does (R5.8).
   bool gateVersions = true;
@@ -253,9 +285,13 @@ class FakeCloudFolderChannel implements CloudFolderChannel {
       case 'resolveVersion':
         if (resolveFails) throw PlatformException(code: 'coordination');
         final id = a['id']! as String;
-        for (final v in unresolvedOf(a['path']! as String)) {
+        final rpath = a['path']! as String;
+        for (final v in unresolvedOf(rpath)) {
           if (v.id == id) {
+            if (tempHeldAtResolve && !_tempHolds(rpath, v.bytes)) resolveViolations.add('$rpath $id');
+            onResolve?.call(rpath, id);
             v.resolved = true;
+            if (resolveThenThrows) throw PlatformException(code: 'coordination');
             return true;
           }
         }

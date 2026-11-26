@@ -5,6 +5,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter_test/flutter_test.dart' show expect, isEmpty;
 import 'package:noted/main.dart' show buildModules;
 import 'package:noted/src/app_settings.dart';
 import 'package:noted/src/icloud_folders.dart';
@@ -32,7 +33,7 @@ class IcloudWorld {
     final made = Directory('${root.path}/Drive')..createSync(recursive: true);
     drive = Directory(made.resolveSymbolicLinksSync());
     access = File('${root.path}/state/folder-access.json');
-    channel = FakeCloudFolderChannel();
+    channel = FakeCloudFolderChannel()..tempHeldAtResolve = true;
     channel.ubiquitous.add(drive.path);
     locks = FolderLocks();
   }
@@ -134,6 +135,8 @@ class IcloudWorld {
       f.dispose();
     }
     await deleteTestFolder(root);
+    // t3c: no version was resolved without its temp holding the bytes.
+    expect(channel.resolveViolations, isEmpty);
   }
 }
 

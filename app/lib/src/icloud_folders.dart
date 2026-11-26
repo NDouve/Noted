@@ -308,6 +308,10 @@ class VersionLanding {
   /// Files whose leftover temps could not be placed yet (counted as refusals).
   final Set<String> refusedTargets = {};
 
+  /// The files whose leftover temps this landing placed (published, adopted, or
+  /// removed as equal): their rows go once no temp of them is left.
+  final Set<String> placed = {};
+
   /// Nothing was learned: the file is not downloaded. Its row stays as it is.
   bool skipped = false;
 }
@@ -1112,6 +1116,10 @@ class IcloudFolders extends ChangeNotifier {
       return;
     }
     final name = path.split(RegExp(r'[\\/]')).last;
+    // A temp that was placed ends its file's row, once none of it is left.
+    for (final p in l.placed) {
+      if (isFolder || _k(p) != k) _clearIssue(p);
+    }
     // A temp that could not be placed counts against its file (not this one).
     for (final r in l.refusedTargets) {
       if (isFolder || _k(r) != k) _refused(r);
@@ -1293,19 +1301,32 @@ class IcloudFolders extends ChangeNotifier {
     _VKind kind,
     VersionLanding out,
   ) async {
-    final bytes = await File(tmp).readAsBytes();
+    // The version temp stays through the resolve (t3c): it is removed only once
+    // a regular file is read holding its bytes.
+    final t = File(tmp);
+    final bytes = await t.readAsBytes();
     final hash = contentHash(bytes);
-    // Equal to the file as it is now: nothing to keep, the copy is dropped.
+    // Equal to the file as it is now: nothing to keep, the file holds it.
     final current = await _readOrNull(path);
     if (current != null && contentHash(current) == hash) {
-      await _removeTemp(tmp, bytes);
+      await _step('equal', path);
       await _resolveVersion(path, id, out);
+      await _afterResolve(t, bytes, path, path, dir, out);
       return;
     }
-    final dest = await _publishCopy(File(tmp), bytes, _copyNames(dir, targetName, kind, hash));
+    // The copy is published from a staged twin, so the temp is kept.
+    final s = await _stage(t, bytes);
+    final ({String path, bool adopted})? dest;
+    try {
+      dest = await _publishCopy(s, bytes, _copyNames(dir, targetName, kind, hash));
+    } on Object {
+      await _removeTemp(s.path, bytes);
+      rethrow;
+    }
     if (dest == null) {
       // Both names are taken by unequal files: the version stays unresolved.
       out.cantKeep = true;
+      await _removeTemp(s.path, bytes);
       await _removeTemp(tmp, bytes);
       return;
     }
@@ -1316,11 +1337,50 @@ class IcloudFolders extends ChangeNotifier {
     // Verified by reading the copy back before the version is let go.
     final back = await _readOrNull(dest.path);
     if (back == null || !_bytesEqual(back, bytes)) {
+      // The version is still unresolved in iCloud: the temp is not needed.
       out.refused = true;
+      await _removeTemp(tmp, bytes);
       return;
     }
     await _step('verified', path);
     await _resolveVersion(path, id, out);
+    await _afterResolve(t, bytes, dest.path, path, dir, out);
+  }
+
+  // A twin of the version temp [t], with the same name pattern: created
+  // exclusively, flushed and read back equal. It can be published (and so
+  // consumed) while [t] is kept.
+  Future<File> _stage(File t, Uint8List bytes) async {
+    final m = _versionTemp.firstMatch(t.path.split(RegExp(r'[\\/]')).last)!;
+    for (var i = 0; i < 8; i++) {
+      final s = File('${t.parent.path}$_sep.${m.group(1)}.noted-version-${_hex(8)}.tmp');
+      try {
+        await s.create(exclusive: true);
+      } on FileSystemException {
+        if (s.existsSync()) continue; // a name taken: another
+        rethrow;
+      }
+      await s.writeAsBytes(bytes, flush: true);
+      final back = await s.readAsBytes();
+      if (!_bytesEqual(back, bytes)) {
+        await _removeTemp(s.path, back);
+        throw FileSystemException('The staged copy of a version did not verify', s.path);
+      }
+      return s;
+    }
+    throw FileSystemException('No free name for a staged version copy', t.path);
+  }
+
+  // After the resolve (whatever it answered): the temp [t] goes only once
+  // [holder] is read holding its bytes; else it is placed now.
+  Future<void> _afterResolve(File t, Uint8List bytes, String holder, String path, String dir, VersionLanding out) async {
+    await _step('reread', path);
+    final now = await _readOrNull(holder);
+    if (now != null && _bytesEqual(now, bytes)) {
+      await _removeTemp(t.path, bytes);
+      return;
+    }
+    await _landTemp(t, dir, out);
   }
 
   Future<bool> _resolveVersion(String path, String id, VersionLanding out) async {
@@ -1358,31 +1418,56 @@ class IcloudFolders extends ChangeNotifier {
   // Puts the verified bytes [bytes] (in [tmp]) where the attachment [path]
   // is: an intact file needs nothing, a missing one is published, a damaged
   // one goes through the damaged set-aside first (0132). [resolve] lets go of
-  // the version once [tmp] is its durable copy.
+  // the version once [tmp] is its durable copy. Without [resolve] (a leftover
+  // temp being placed) [tmp] is published or removed at once. With it, [tmp]
+  // is kept through the resolve and removed only once the attachment is read
+  // intact again; else it is placed (t3c).
   Future<bool> _placeAttachment(
     File tmp,
     Uint8List bytes,
     String path,
     String nameHash,
     VersionLanding out,
-    Future<bool> Function() resolve, {
+    Future<bool> Function()? resolve, {
     bool sole = true,
   }) async {
     final f = File(path);
     final exists = FileSystemEntity.typeSync(path, followLinks: false) != FileSystemEntityType.notFound;
     if (!exists) {
       if (isDataless(path)) return false;
-      if (!await publishAttachment(tmp, path)) return false;
-      await _removeTemp(tmp.path, bytes);
+      if (resolve == null) {
+        if (!await publishAttachment(tmp, path)) return false;
+        await _removeTemp(tmp.path, bytes);
+        out.published.add(path);
+        return true;
+      }
+      final s = await _stage(tmp, bytes);
+      final bool published;
+      try {
+        published = await publishAttachment(s, path);
+      } on Object {
+        await _removeTemp(s.path, bytes);
+        rethrow;
+      }
+      // Consumed by the publish, or left (a name taken, a volume without links).
+      if (File(s.path).existsSync()) await _removeTemp(s.path, bytes);
+      if (!published) return false;
       out.published.add(path);
-      return resolve();
+      final done = await resolve();
+      await _recheckAttachment(tmp, bytes, path, nameHash, out);
+      return done;
     }
     if (isDataless(path)) return false;
     final c = await checkAttachmentFile(f, nameHash, 0);
     switch (c.state) {
       case AttachmentState.ok:
-        await _removeTemp(tmp.path, bytes);
-        return resolve();
+        if (resolve == null) {
+          await _removeTemp(tmp.path, bytes);
+          return true;
+        }
+        final done = await resolve();
+        await _recheckAttachment(tmp, bytes, path, nameHash, out);
+        return done;
       case AttachmentState.damaged:
         // The set-aside is a move of the file: another unresolved version would
         // make it pending for good. Then nothing is resolved and the file is
@@ -1395,7 +1480,7 @@ class IcloudFolders extends ChangeNotifier {
         // The temp is the durable copy now: the version is let go first (a crash
         // after it leaves the temp, which the launch pass and the folder tick
         // find in any folder, `.assets` included).
-        if (!await resolve()) return false;
+        if (resolve != null && !await resolve()) return false;
         final aside = await setAsideDamaged(f, c.found!);
         if (aside.name == null) return false;
         if (!await publishAttachment(tmp, path)) return false;
@@ -1405,6 +1490,18 @@ class IcloudFolders extends ChangeNotifier {
       default:
         return false;
     }
+  }
+
+  // After the resolve of an attachment's version: the temp goes only once the
+  // attachment is read intact; else it is placed now.
+  Future<void> _recheckAttachment(File tmp, Uint8List bytes, String path, String nameHash, VersionLanding out) async {
+    await _step('reread', path);
+    final c = isDataless(path) ? null : await checkAttachmentFile(File(path), nameHash, 0);
+    if (c != null && c.state == AttachmentState.ok) {
+      await _removeTemp(tmp.path, bytes);
+      return;
+    }
+    await _landTemp(tmp, tmp.parent.path, out);
   }
 
   // Version temps in [dir]: one equal to its copy is removed (checked), any
@@ -1454,13 +1551,15 @@ class IcloudFolders extends ChangeNotifier {
         final current = await _readOrNull(path);
         if (current != null && contentHash(current) == hash) {
           await _removeTemp(t.path, bytes);
+          out.placed.add(path);
           return;
         }
         final dest = await _publishCopy(t, bytes, _copyNames(dir, target.name, kind, hash));
         if (dest == null) {
           out.stuck.add(path);
-        } else if (!dest.adopted) {
-          out.published.add(dest.path);
+        } else {
+          out.placed.add(path);
+          if (!dest.adopted) out.published.add(dest.path);
         }
       case _VKind.attachment:
         final nameHash = attachmentNameHash(target.name)!;
@@ -1469,7 +1568,11 @@ class IcloudFolders extends ChangeNotifier {
           return;
         }
         final at = '$dir$_sep${target.name}';
-        if (!await _placeAttachment(t, bytes, at, nameHash, out, () async => true)) out.refusedTargets.add(at);
+        if (await _placeAttachment(t, bytes, at, nameHash, out, null)) {
+          out.placed.add(at);
+        } else {
+          out.refusedTargets.add(at);
+        }
       case _VKind.template:
       case _VKind.other:
         await _removeTemp(t.path, bytes);
