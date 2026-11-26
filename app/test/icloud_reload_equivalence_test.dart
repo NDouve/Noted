@@ -58,7 +58,7 @@ import '../../packages/noted_mcp/lib/src/closed_writer.dart';
 import 'support/busy_retry.dart';
 import 'support/icloud_world.dart';
 import 'support/io_trace.dart' show IoTrace, TracingIoOverrides;
-import 'support/notebook_folder.dart' show deleteTestFolder;
+import 'support/notebook_folder.dart' show deleteTestFolder, inFlightOf;
 
 const int _extraSeeds = int.fromEnvironment('ICLOUD_SEEDS', defaultValue: 0);
 const int _fixedSeeds = 40;
@@ -99,7 +99,7 @@ const Map<String, List<String>> _feeders = {
 };
 
 final Set<String> _killed = {};
-int _ran = 0;
+final Set<int> _ranSeeds = {};
 
 /// A page store whose primitives call the sequence's kill points.
 class _Store extends PageStore {
@@ -229,6 +229,14 @@ class _Recorder extends IoTrace {
       sim.ended(id, error);
 }
 
+/// The harness itself failed (not the app): a snapshot that could not be taken.
+final class _HarnessError implements Exception {
+  _HarnessError(this.message);
+  final String message;
+  @override
+  String toString() => message;
+}
+
 final class _Snapshot {
   _Snapshot(this.dir, this.resolved);
 
@@ -326,6 +334,7 @@ class _Sim {
   /// operation with an end (an FFI call, made at once).
   int note(String op, String path, String? to, {bool track = true, bool refused = false}) {
     final id = ++_noteId;
+    if (Zone.current[#untraced] == true) return id;
     if (_relOf(path) == null && !(to != null && _relOf(to) != null)) return id;
     final tag = Zone.current[#life];
     final by = Zone.current[#who];
@@ -342,7 +351,47 @@ class _Sim {
         '#$id ${_clock.elapsedMilliseconds}ms $phase $who $op ${_show(path)}${to == null ? '' : ' -> ${_show(to)}'}${refused ? ' (refused)' : ''}';
     _add(id, line);
     if (track && !refused) inflight[id] = line;
+    if (!refused && (_writeOps.contains(op) || op == 'ffiPublish' || op == 'ffiRestore')) {
+      final app = by == null && Zone.current[#exempt] != true && tag != null;
+      final stack = app ? _appFrames() : null;
+      for (final p in [path, ?to]) {
+        final key = _pageKey(p);
+        if (key == null) continue;
+        lastWrite[key] = line;
+        if (stack != null) lastAppWrite[key] = '$line\n$stack';
+      }
+    }
     return id;
+  }
+
+  /// The last write to each page file (by its id): any writer, and the app's
+  /// own with the Dart stack of the call (only the app's and the packages'
+  /// frames, kept for writes only so the trail stays cheap).
+  final Map<String, String> lastWrite = {};
+  final Map<String, String> lastAppWrite = {};
+
+  /// The page id a world path is the page file of, else null (a temp, an aside
+  /// or a verified copy beside it is no page write).
+  String? _pageKey(String p) {
+    if (_relOf(p) == null) return null;
+    final name = _base(p);
+    if (!name.endsWith('.canvas')) return null;
+    final key = name.split('.').first;
+    return key.length < 8 ? null : key;
+  }
+
+  static final RegExp _appFrame = RegExp(r'^#\d+\s+(\S+)\s+\((package:noted[^)]*)\)');
+
+  static String _appFrames() {
+    final out = <String>[];
+    for (final line in StackTrace.current.toString().split('\n')) {
+      final m = _appFrame.firstMatch(line);
+      if (m == null || m.group(2)!.contains('io_trace.dart')) continue;
+      final frame = '      ${m.group(1)} (${m.group(2)})';
+      if (!out.contains(frame)) out.add(frame);
+      if (out.length == 12) break;
+    }
+    return out.isEmpty ? '      (no application frames)' : out.join('\n');
   }
 
   void ended(int id, [Object? error]) {
@@ -417,7 +466,11 @@ class _Sim {
     return runZoned(() {
       final dir = Directory('${snapRoot.path}/snap${_counter++}')
         ..createSync(recursive: true);
-      _copyTree(w.root, dir, skip: {});
+      try {
+        _copyTree(w.root, dir, skip: {});
+      } on _HarnessError catch (e) {
+        harnessError ??= e.message;
+      }
       return _Snapshot(dir, {
         for (final v in versions)
           for (final x in w.channel.versionsOf(v.path)) x.id: x.resolved,
@@ -434,6 +487,19 @@ class _Sim {
   /// one of its two names. False only for the test that shows what the gap does.
   bool faithfulSnapshot = true;
 
+  /// A test seam: called before each file copy (throw a [FileSystemException]
+  /// to make the copy fail).
+  void Function(File e, String name)? copyFault;
+
+  /// A snapshot that could not be taken: the seed fails with it at the end of
+  /// the step (the throw inside the app's kill point could be swallowed).
+  String? harnessError;
+
+  void _checkHarness() {
+    final e = harnessError;
+    if (e != null) throw StateError('seed $seed: harness error, $e; steps: ${log.join(', ')}');
+  }
+
   void _said(String what, String text) {
     log.add('$what: $text');
     debugPrint('[snapshot-race] seed $seed $killKind: $what: $text');
@@ -446,6 +512,7 @@ class _Sim {
     void copyOne(File e, String name) {
       for (var attempt = 0; ; attempt++) {
         try {
+          copyFault?.call(e, name);
           e.copySync('${to.path}/$name');
           return;
         } on FileSystemException {
@@ -456,11 +523,13 @@ class _Sim {
             return;
           }
           // Still there: held by someone for a moment (a sharing violation).
-          if (attempt >= 3) {
+          // A copy that never succeeds is not a crash state: the snapshot
+          // would lack a file the app never lost. A harness error.
+          if (attempt >= 40) {
             _said(what, '$name busy, not copied');
-            return;
+            throw _HarnessError('$what: $name could not be copied after ${attempt + 1} attempts (busy)');
           }
-          sleep(const Duration(milliseconds: 5));
+          sleep(const Duration(milliseconds: 10));
         }
       }
     }
@@ -727,6 +796,7 @@ class _Sim {
 
   /// The planned kill came: drop the live notebook, put the copy back, launch.
   Future<void> crash() async {
+    _checkHarness();
     final s = snapshot!;
     snapshot = null;
     log.add('crash and relaunch');
@@ -844,7 +914,10 @@ class _Sim {
     }
   }
 
-  List<String> missing() {
+  // [withTemps]: a `.tmp` (the version temp landing keeps a version in between
+  // a resolve and its re-publish) holds a marker too: the per-step check counts
+  // it, the end check does not.
+  List<String> missing({bool withTemps = false, Set<String> staleTemps = const {}}) {
     final texts = StringBuffer();
     for (final e in w.root.listSync(recursive: true, followLinks: false)) {
       if (e is! File) continue;
@@ -852,7 +925,7 @@ class _Sim {
       final name = _base(e.path);
       if (name.endsWith(asideSuffix) ||
           name.endsWith(verifiedSuffix) ||
-          name.endsWith('.tmp')) {
+          (name.endsWith('.tmp') && (!withTemps || staleTemps.contains(e.path)))) {
         continue;
       }
       try {
@@ -902,7 +975,9 @@ class _Sim {
       if (!op.startsWith('daemon') && op != 'plantLeftover') rethrow;
       log.add('$op skipped: busy');
     }
-    audit(op);
+    _checkHarness();
+    if (afterStep != null) await inLife(() => afterStep!(op));
+    await audit(op);
   }
 
   Future<void> run(String op) async {
@@ -943,7 +1018,14 @@ class _Sim {
   // once the process has been relaunched.
   Map<String, List<String>> _held = {};
 
-  void audit(String op) {
+  Set<String> _prevTemps = {};
+
+  /// Runs [body] without noting its file operations in the trail (the
+  /// harness's own polling).
+  T untraced<T>(T Function() body) =>
+      runZoned(body, zoneValues: {#exempt: true, #untraced: true});
+
+  Future<void> audit(String op) async {
     if (const bool.fromEnvironment('ICLOUD_TRACE')) {
       String short(String s) => s.replaceAllMapped(
         RegExp(r'([0-9a-f]{4})[0-9a-f]{12}'),
@@ -960,15 +1042,46 @@ class _Sim {
       log.add('=> files ${files.join(' ')} | rows ${rows.join(' ')}');
     }
     if (!quiet) return;
-    final now = {for (final m in durable.keys) m: where(m)};
-    for (final m in missing()) {
+    final now = untraced(() => {for (final m in durable.keys) m: where(m)});
+    // A marker can be between files for a moment: the app's save has moved the
+    // page aside and not published yet. Only one that stays out of every file
+    // while it is looked at again is lost.
+    final clock = Stopwatch()..start();
+    // A `.tmp` that was already there at the previous step is not a holder
+    // (one left by a killed life would hide a later loss).
+    List<String> look() => untraced(() => missing(withTemps: true, staleTemps: _prevTemps));
+    var lost = look();
+    while (lost.isNotEmpty && clock.elapsed < const Duration(seconds: 5)) {
+      await Future<void>.delayed(const Duration(milliseconds: 25));
+      lost = look();
+    }
+    _prevTemps = untraced(
+      () => {
+        for (final e in w.root.listSync(recursive: true, followLinks: false))
+          if (e is File && e.path.endsWith('.tmp')) e.path,
+      },
+    );
+    final gone = <String>[];
+    for (final m in lost) {
       if (reportedMissing.add(m)) {
+        gone.add(m);
         log.add(
           'MISSING $m (${durable[m]}) after $op; it was in ${_held[m]}, the files are ${listing().join(' ')}',
         );
       }
     }
-    _held = now;
+    if (gone.isNotEmpty) {
+      // Fail at the step that lost it, not at the end: the last write to its
+      // files is the one to look at.
+      fail(
+        'seed $seed (kill at $killKind #$killNth) failed: ${gone.join(', ')} disappeared after step $op '
+        '(it was in ${_held[gone.first]}; a marker moved into a conflict copy or a version counts as present)'
+        '\nsteps: ${log.join(', ')}${_lostTrail()}',
+      );
+    }
+    _held = {
+      for (final e in now.entries) e.key: e.value.isEmpty ? (_held[e.key] ?? e.value) : e.value,
+    };
   }
 
   Future<void> pause() =>
@@ -1273,6 +1386,7 @@ class _Sim {
 
   Future<void> verify() async {
     phase = 'verify';
+    _checkHarness();
     final problems = <String>[];
     // The live notebook, as a watcher event would leave it: its folder looked
     // at again, everything saved.
@@ -1401,9 +1515,22 @@ class _Sim {
       final files = <String>{
         ...?_held[m],
         ...RegExp(
-          r'[0-9A-Za-z_]+\.canvas',
-        ).allMatches(durable[m] ?? '').map((x) => x.group(0)!),
+          r'[0-9a-f]{16}(?:\.canvas)?',
+        ).allMatches(durable[m] ?? '').map((x) => '${x.group(0)!.split('.').first}.canvas'),
       };
+      for (final f in files) {
+        final key = f.split('.').first;
+        out.write('\nlast write to $f: ${lastWrite[key] ?? 'none seen'}');
+        final app = lastAppWrite[key]?.split('\n');
+        if (app != null) {
+          if (app.first == lastWrite[key]) {
+            out.write(' (the app\'s)');
+          } else {
+            out.write('\nlast app write to $f: ${app.first}');
+          }
+          out.write('\n${app.skip(1).join('\n')}');
+        }
+      }
       out.write(
         '\nIO trail for $m (${durable[m]}), files $files (oldest retained #${trail.isEmpty ? '-' : trail.first.id}):',
       );
@@ -1414,7 +1541,15 @@ class _Sim {
     return out.toString();
   }
 
+  /// A test seam: runs as the app after each step, before the markers are
+  /// checked (a write that loses one).
+  Future<void> Function(String op)? afterStep;
+
+  /// A test seam: awaited first in [dispose] (a disposal that hangs).
+  Future<void> Function()? disposeSeam;
+
   Future<void> dispose() async {
+    await disposeSeam?.call();
     await w.dispose();
     if (snapRoot.existsSync()) await deleteTestFolder(snapRoot);
   }
@@ -1461,11 +1596,13 @@ Future<void> _sequence(
   int seed, {
   void Function(_Sim)? setUp,
   List<String>? plan,
+  Duration disposeLimit = const Duration(seconds: 90),
 }) async {
   final s = _Sim(seed);
   setUp?.call(s);
   final recorder = _Recorder(s);
   await IOOverrides.runWithIOOverrides(() async {
+    Object? failure;
     try {
       Future<void> whole() async {
         await s.boot();
@@ -1489,11 +1626,29 @@ Future<void> _sequence(
           'seed $seed hung in ${s.phase}; steps: ${s.log.join(', ')}',
         ),
       );
+    } catch (e) {
+      failure = e;
+      rethrow;
     } finally {
-      await s.dispose().timeout(const Duration(seconds: 15), onTimeout: () {});
+      // The settle helper reports stuck work after 20 s and a delete retries for
+      // 20 s: the limit is above both, and a disposal that does not finish
+      // fails the seed (0192) instead of letting it pass. The seed's own
+      // failure, when there is one, is the one reported.
+      try {
+        await s.dispose().timeout(
+          disposeLimit,
+          onTimeout: () => throw TestFailure(
+            'seed $seed: disposal did not finish within $disposeLimit (phase ${s.phase}); '
+            'in flight: ${inFlightOf(s.w.notebooks) ?? 'nothing'}; steps: ${s.log.join(', ')}',
+          ),
+        );
+      } catch (e) {
+        if (failure == null) rethrow;
+        debugPrint('seed $seed: disposal also failed: $e');
+      }
     }
   }, TracingIoOverrides(recorder));
-  if (setUp == null) _ran++;
+  if (setUp == null) _ranSeeds.add(seed);
 }
 
 BoxRecord _plainBox(int n, String marker) => BoxRecord.create(
@@ -1612,8 +1767,63 @@ void _windowsFolderTests() {
   });
 }
 
+// A CI run picks its seeds by environment variable (the manual workflow
+// `reload-seeds.yml`): `NOTED_RELOAD_SEEDS` is a list of numbers and ranges
+// (`1-40`, `3,7,20-25`); `NOTED_RELOAD_REPEAT_SEED` and
+// `NOTED_RELOAD_REPEAT_COUNT` run one seed that many times, each its own test.
+// With either set, the first failing seed stops the rest, and its failure is
+// printed whole.
+List<int>? _envSeeds() {
+  final spec = Platform.environment['NOTED_RELOAD_SEEDS']?.trim() ?? '';
+  if (spec.isEmpty) return null;
+  final out = <int>[];
+  for (final part in spec.split(',')) {
+    final m = RegExp(r'^\s*(\d+)\s*(?:-\s*(\d+))?\s*$').firstMatch(part);
+    if (m == null) throw ArgumentError('NOTED_RELOAD_SEEDS: cannot read "$part"');
+    final a = int.parse(m.group(1)!);
+    final b = int.parse(m.group(2) ?? m.group(1)!);
+    for (var i = a; i <= b; i++) {
+      out.add(i);
+    }
+  }
+  return out;
+}
+
+bool _stopped = false;
+
+Future<void> _runSeed(int seed, String what, {required bool stopAtFirst}) async {
+  if (stopAtFirst && _stopped) {
+    markTestSkipped('an earlier seed failed');
+    return;
+  }
+  try {
+    await _sequence(seed);
+  } catch (e) {
+    if (stopAtFirst) {
+      _stopped = true;
+      debugPrint('[reload-seeds] $what FAILED:\n$e');
+    }
+    rethrow;
+  }
+}
+
 void main() {
-  final seeds = [for (var i = 1; i <= _fixedSeeds + _extraSeeds; i++) i];
+  final envSeeds = _envSeeds();
+  final rawSeed = Platform.environment['NOTED_RELOAD_REPEAT_SEED']?.trim() ?? '';
+  final rawCount = Platform.environment['NOTED_RELOAD_REPEAT_COUNT']?.trim() ?? '';
+  final repeatSeed = int.tryParse(rawSeed);
+  final repeatCount = int.tryParse(rawCount) ?? 0;
+  if ((rawSeed.isNotEmpty && repeatSeed == null) ||
+      (rawCount.isNotEmpty && int.tryParse(rawCount) == null)) {
+    throw ArgumentError(
+      'NOTED_RELOAD_REPEAT_SEED "$rawSeed" and NOTED_RELOAD_REPEAT_COUNT "$rawCount" must be whole numbers',
+    );
+  }
+  final repeating = repeatSeed != null && repeatCount > 0;
+  final stopAtFirst = envSeeds != null || repeating;
+  final seeds =
+      envSeeds ??
+      (repeating ? const <int>[] : [for (var i = 1; i <= _fixedSeeds + _extraSeeds; i++) i]);
 
   _windowsFolderTests();
 
@@ -1621,9 +1831,18 @@ void main() {
     for (final seed in seeds) {
       test(
         'seed $seed',
-        () => _sequence(seed),
+        () => _runSeed(seed, 'seed $seed', stopAtFirst: stopAtFirst),
         timeout: const Timeout(Duration(minutes: 4)),
       );
+    }
+    if (repeating) {
+      for (var i = 1; i <= repeatCount; i++) {
+        test(
+          'seed $repeatSeed, run $i of $repeatCount',
+          () => _runSeed(repeatSeed, 'seed $repeatSeed run $i of $repeatCount', stopAtFirst: true),
+          timeout: const Timeout(Duration(minutes: 4)),
+        );
+      }
     }
 
     // The snapshot lists a folder and copies file by file, while the app's
@@ -1687,8 +1906,162 @@ void main() {
       }
     });
 
+    // A disposal that hangs fails the seed, naming what is in flight (it used
+    // to be cut off after 15 s and the seed passed).
+    test('a disposal that does not finish fails the seed', () async {
+      final gate = Completer<void>();
+      await expectLater(
+        () => _sequence(
+          3,
+          setUp: (s) => s.disposeSeam = () => gate.future,
+          plan: const ['appEdit', 'appCheck'],
+          disposeLimit: const Duration(milliseconds: 300),
+        ),
+        throwsA(
+          isA<TestFailure>().having(
+            (e) => e.message,
+            'message',
+            allOf(contains('disposal did not finish'), contains('in flight:')),
+          ),
+        ),
+      );
+      // Let the stuck disposal finish, so the next test starts clean.
+      gate.complete();
+      await Future<void>.delayed(const Duration(seconds: 2));
+    }, timeout: const Timeout(Duration(minutes: 4)));
+
+    // A marker that goes is reported at the step that lost it, with the last
+    // write to its file: who made it and, for the app, the Dart stack.
+    test('a marker lost by a write fails at that step and names the write', () async {
+      var done = false;
+      await expectLater(
+        () => _sequence(
+          5,
+          setUp: (s) {
+            s.afterStep = (op) async {
+              final mine = [
+                for (final e in s.durable.entries)
+                  if (e.value.startsWith('an app edit')) e.key,
+              ];
+              if (done || mine.isEmpty) return;
+              done = true;
+              final m = mine.first;
+              final file = s.pageFiles().firstWhere((f) => s.readText(f)!.contains(m));
+              final text = file.readAsStringSync();
+              final gone = readPage(text).removeNode(s.box(m).id);
+              await _Store(s.w.drive, s).saveIfUnchanged(gone, text);
+            };
+          },
+          plan: const ['appEdit', 'appEdit', 'appCheck'],
+        ),
+        throwsA(
+          isA<TestFailure>().having(
+            (e) => e.message,
+            'message',
+            allOf(
+              contains('disappeared after step'),
+              contains('last write to'),
+              contains('app(life'),
+              contains('_replaceIfUnchanged'),
+            ),
+          ),
+        ),
+      );
+      expect(done, isTrue);
+    }, timeout: const Timeout(Duration(minutes: 4)));
+
+    // A marker held only by a version temp (`.tmp`) between a resolve and its
+    // re-publish is not lost at that step.
+    test('a marker held only by a .tmp counts as present at a step', () async {
+      File? tmp;
+      File? page;
+      String? original;
+      final checked = <String>[];
+      await _sequence(
+        5,
+        setUp: (s) {
+          s.afterStep = (op) async {
+            checked.add(op);
+            if (tmp == null) {
+              final m = [
+                for (final e in s.durable.entries)
+                  if (e.value.startsWith('an app edit')) e.key,
+              ].firstOrNull;
+              if (m == null) return;
+              page = s.pageFiles().firstWhere((f) => s.readText(f)!.contains(m));
+              original = s.readText(page!)!;
+              tmp = File('${page!.path}.99999-1.tmp');
+              s.retrySync(() => tmp!.writeAsStringSync(original!));
+              s.daemonWrite(page!, writePage(readPage(original!).removeNode(s.box(m).id)));
+            } else if (tmp!.existsSync()) {
+              // The next step: the re-publish.
+              s.daemonWrite(page!, original!);
+              s.retrySync(() => tmp!.deleteSync());
+            }
+          };
+        },
+        plan: const ['appEdit', 'appCheck', 'appCheck'],
+      );
+      expect(tmp, isNotNull, reason: 'the hook held the marker in a temp');
+      expect(tmp!.existsSync(), isFalse);
+    }, timeout: const Timeout(Duration(minutes: 4)));
+
+    // A `.tmp` that was already there at the previous step (one left by a
+    // killed life) does not hide a later loss.
+    test('a stale .tmp does not hold a marker at a later step', () async {
+      File? tmp;
+      await expectLater(
+        () => _sequence(
+          5,
+          setUp: (s) {
+            s.afterStep = (op) async {
+              final m = [
+                for (final e in s.durable.entries)
+                  if (e.value.startsWith('an app edit')) e.key,
+              ].firstOrNull;
+              if (m == null) return;
+              final page = s.pageFiles().firstWhere((f) => s.readText(f)!.contains(m));
+              final text = s.readText(page)!;
+              if (tmp == null) {
+                tmp = File('${page.path}.99999-1.tmp');
+                s.retrySync(() => tmp!.writeAsStringSync(text));
+              } else if (text.contains(m)) {
+                s.daemonWrite(page, writePage(readPage(text).removeNode(s.box(m).id)));
+              }
+            };
+          },
+          plan: const ['appEdit', 'appCheck', 'appCheck'],
+        ),
+        throwsA(
+          isA<TestFailure>().having((e) => e.message, 'message', contains('disappeared after step')),
+        ),
+      );
+      expect(tmp, isNotNull);
+    }, timeout: const Timeout(Duration(minutes: 4)));
+
+    // A copy that keeps failing while the file is there is a harness error, not
+    // a snapshot without the file (the restore would report a loss that did
+    // not happen).
+    test('a snapshot copy that keeps failing fails the seed as a harness error', () async {
+      await expectLater(
+        () => _sequence(
+          7,
+          setUp: (s) {
+            s.killNth = 1;
+            s.copyFault = (e, name) {
+              if (name.endsWith('.canvas')) throw FileSystemException('busy', e.path);
+            };
+          },
+          plan: const ['appEdit', 'appEdit', 'appCheck', 'appEdit'],
+        ),
+        throwsA(
+          isA<StateError>().having((e) => e.message, 'message', contains('harness error')),
+        ),
+      );
+    }, timeout: const Timeout(Duration(minutes: 4)));
+
     test('every kill point was reached by some seed', () {
-      if (_ran < _fixedSeeds) return; // a single seed was asked for
+      if (_ranSeeds.length < _fixedSeeds) return; // a single seed was asked for
       expect(
         _killed.toSet(),
         containsAll(_killKinds),
