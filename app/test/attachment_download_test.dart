@@ -190,6 +190,60 @@ void main() {
       expect(File('${assetsOf(work, a).path}$sep$name').existsSync(), isTrue, reason: 'the copy stays');
     });
 
+    test('a put-back across drives keeps its source folder and names the file it skipped', () async {
+      Notebook.forceCopyMoveForTest = false; // the delete sets the folder aside by rename
+      final (nb, a, _) = await scanned();
+      final src = assetsOf(pages, a);
+      put(src, name, good);
+      put(src, name2, good2);
+      final deleted = await nb.delete(a);
+      final trashed = Directory('${root.path}/app/deleted-attachments')
+          .listSync(recursive: true)
+          .whereType<File>()
+          .where((f) => f.path.endsWith(name2))
+          .toList();
+      expect(trashed, hasLength(1), reason: 'set aside for Undo');
+      debugMarkDataless(trashed.single.path);
+      Notebook.forcePutBackCannotRenameForTest = true; // as across drives
+      addTearDown(() => Notebook.forcePutBackCannotRenameForTest = false);
+      notices.clear();
+      try {
+        await nb.undoDelete(deleted);
+      } on NotebookException catch (e) {
+        notices.add(e.message); // the put-back did not finish
+      }
+      await Future<void>.delayed(Duration.zero);
+      expect(trashed.single.existsSync(), isTrue, reason: 'the source folder is kept');
+      expect(askedFor(trashed.single.path), isTrue);
+      expect(notices.any((n) => n.contains('Still downloading, left in') && n.contains(name2)), isTrue, reason: '$notices');
+    });
+
+    test('on Apple an Undo that renames back names the file it left, not the generic text', () async {
+      Notebook.forceCopyMoveForTest = false;
+      final (nb, a, _) = await scanned();
+      final src = assetsOf(pages, a);
+      put(src, name, good);
+      put(src, name2, good2);
+      final deleted = await nb.delete(a);
+      final trashed = Directory('${root.path}/app/deleted-attachments')
+          .listSync(recursive: true)
+          .whereType<File>()
+          .firstWhere((f) => f.path.endsWith(name2));
+      debugAppleMode = true;
+      debugMarkDataless(trashed.path);
+      notices.clear();
+      try {
+        await nb.undoDelete(deleted);
+      } on NotebookException {
+        // The put-back did not finish.
+      }
+      await Future<void>.delayed(Duration.zero);
+      expect(trashed.existsSync(), isTrue, reason: 'left where it is');
+      expect(askedFor(trashed.path), isTrue);
+      expect(notices.any((n) => n.contains('Still downloading, left in') && n.contains(name2)), isTrue, reason: '$notices');
+      expect(notices.any((n) => n.contains('could not be moved out of')), isFalse, reason: 'not the generic text');
+    });
+
     test('with no requester the text says the file is a placeholder', () async {
       final (nb, a, x) = await scanned(requester: false);
       final src = assetsOf(pages, a);
@@ -376,6 +430,12 @@ void main() {
           nb.templatePublishedHook = null;
           expect(templateFiles(modes[mode]!.dir()), hasLength(1), reason: 'a changed file is kept');
           expect(File(templateFiles(modes[mode]!.dir()).single).readAsStringSync(), '{"changed": true}');
+          expect(
+            files(modes[mode]!.dir()).where((f) => f.endsWith(name) && f.endsWith('.bin')),
+            isNotEmpty,
+            reason: 'a template that is still listed keeps its assets',
+          );
+          expect(files(modes[mode]!.dir()).where((f) => f.endsWith(name2)), isNotEmpty);
         });
 
         test('with nothing evicted the save still works, template and assets together', () async {
@@ -400,6 +460,8 @@ void main() {
       await expectLater(within(nb.savePageAsTemplate(inB, name: 'T', inBinder: true)), throwsA(isA<NotebookException>()));
       nb.templatePublishedHook = null;
       expect(templateFiles(binderTemplates), hasLength(1), reason: 'the binder changed, so the file was not deleted');
+      expect(files(binderTemplates).where((f) => f.endsWith(name)), isNotEmpty, reason: 'and its assets stay');
+      expect(files(binderTemplates).where((f) => f.endsWith(name2)), isNotEmpty);
     });
 
     test('assets that arrive with no template file survive a sweeping listing, and stay when the file comes', () async {
@@ -430,6 +492,38 @@ void main() {
       );
       expect(nb.tree.roots.length, before);
       expect(askedFor('${tAssets.path}$sep$name'), isTrue);
+    });
+
+    test('a new page from a template: a file evicted mid-copy refuses it, and its copies go', () async {
+      final t = await nb.savePageAsTemplate(pageId, name: 'T');
+      final tAssets = Directory('${templates.path}$sep${t.id}.assets$sep$pageId');
+      final before = pages.listSync().map((e) => e.path).toSet();
+      attachmentBeforePublishHook = (target) async {
+        if (target.endsWith(name2)) debugMarkDataless('${tAssets.path}$sep$name2'); // after the first file was copied
+      };
+      await expectLater(
+        within(nb.createPageFromTemplate(t)),
+        throwsA(isA<NotebookException>().having((e) => e.message, 'message', 'Some files are still downloading. Try again in a moment.')),
+      );
+      attachmentBeforePublishHook = null;
+      expect(pages.listSync().map((e) => e.path).toSet(), before, reason: 'no page, no assets folder left');
+    });
+
+    test('a binder from a template: a file evicted mid-copy refuses it, and no binder or copy is left', () async {
+      final t = await nb.saveBinderAsTemplate(binder.path, name: 'T');
+      final victim = Directory('${templates.path}$sep${t.id}.assets')
+          .listSync(recursive: true)
+          .whereType<File>()
+          .firstWhere((f) => f.path.endsWith(name2))
+          .path;
+      attachmentBeforePublishHook = (target) async {
+        if (target.endsWith(name2)) debugMarkDataless(victim);
+      };
+      final target = await Directory('${root.path}/NewBinder2').create();
+      await expectLater(within(nb.createBinderFromTemplate(t, target.path)), throwsA(isA<NotebookException>()));
+      attachmentBeforePublishHook = null;
+      expect(File('${target.path}$sep$binderFileName').existsSync(), isFalse);
+      expect(files(target), isEmpty, reason: 'pages and copies were removed');
     });
 
     test('a binder from a template whose assets are not downloaded is refused, and no binder is made', () async {
@@ -488,6 +582,37 @@ void main() {
       expect(File('${assetsOf(extra, a).path}${sep}sub$sep$name').readAsBytesSync(), good, reason: 'the nested file moved');
       expect(askedFor('${src.path}$sep$name2'), isTrue);
       expect(readOf('${src.path}$sep$name2'), isFalse, reason: 'nothing was read to download it');
+    });
+
+    test('an evicted assets folder is asked for and never listed, moved or removed (move)', () async {
+      final (nb, a, x) = await scanned();
+      final src = assetsOf(pages, a);
+      put(src, name, good);
+      put(src, name2, good2);
+      debugMarkDataless(src.path); // iCloud evicted the whole folder
+      await expectLater(
+        nb.move(a, parentId: x),
+        throwsA(isA<NotebookException>().having((e) => e.message, 'message', contains('Still downloading, left in the old folder'))),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(names(src), [name, name2]..sort(), reason: 'nothing was moved out of it, and it was not removed');
+      expect(names(assetsOf(extra, a)), isEmpty);
+      expect(askedFor(src.path), isTrue);
+    });
+
+    test('an evicted assets folder refuses a delete whole, and nothing is set aside', () async {
+      final (nb, a, _) = await scanned();
+      final src = assetsOf(pages, a);
+      put(src, name, good);
+      debugMarkDataless(src.path);
+      await expectLater(
+        nb.delete(a),
+        throwsA(isA<NotebookException>().having((e) => e.message, 'message', 'Still downloading. Delete again once the files are here.')),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(File('${pages.path}$sep$a.canvas').existsSync(), isTrue);
+      expect(names(src), [name]);
+      expect(askedFor(src.path), isTrue);
     });
 
     test('B2: with the destination folder there, the evicted file is asked for and left with its note', () async {

@@ -378,7 +378,7 @@ void main() {
       expect(asked, [folderPath(name)]);
       await asking.open('f.bin', fileName: name);
       expect(opened, isEmpty);
-      expect(notices.single, 'Downloading. It will open once it is here.');
+      expect(notices.single, "This file is still downloading. Open it again once it's here.");
     });
 
     test('a verified read of a dataless file is syncing, and a good file still reads', () async {
