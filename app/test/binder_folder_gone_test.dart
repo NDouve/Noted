@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -306,6 +307,47 @@ void main() {
         return 'status ${b.status}, missing ${b.missing}, fileMissing ${b.fileMissing}, reason ${b.reason}';
       },
     );
+  });
+
+  // The check that brings a disabled binder back awaits the binder read; a user
+  // who removes the binder meanwhile must not see it come back (nor have it
+  // saved into the list again).
+  test('a binder removed while the folder check reopens it stays removed', () async {
+    final d = await setUpBinder();
+    final nb = d.nb;
+    final good = binderFile().readAsStringSync();
+    await takeAway();
+    await until(() => d.s.missing, what: 'the binder missing');
+    File('${away.path}/$binderFileName').deleteSync();
+
+    final previous = IOOverrides.current;
+    var published = false;
+    IOOverrides.global = _PublishBeforeWatch(folder.path, () {
+      if (published) return;
+      published = true;
+      binderFile().writeAsStringSync(good);
+    });
+    addTearDown(() => IOOverrides.global = previous);
+
+    // The reopen is held once it has read the file.
+    final reached = Completer<void>();
+    final release = Completer<void>();
+    nb.binderHook = (point, path) async {
+      if (point == 'parsed' && !reached.isCompleted) {
+        reached.complete();
+        await release.future;
+      }
+    };
+    await bringBack();
+    await reached.future.timeout(const Duration(seconds: 10), onTimeout: () => fail('the check never reopened the binder'));
+    IOOverrides.global = previous;
+
+    await nb.removeBinder(d.s.path);
+    release.complete();
+    await Future<void>.delayed(const Duration(milliseconds: 600));
+    await nb.flush();
+    expect(nb.binders, isEmpty);
+    expect(File('${root.path}/app/binders.json').readAsStringSync(), isNot(contains('Work')));
   });
 
   testWidgets('the sidebar says "On another device" and keeps the pages, greyed', (tester) async {
