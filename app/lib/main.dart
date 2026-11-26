@@ -98,7 +98,13 @@ Future<WindowChannel?> startCustomFrame({WindowChannel? channel}) async {
 }
 
 Future<void> main(List<String> args) async {
+  // The first line main() prints: the emulator job counts these to see that a
+  // second MainActivity never starts a second engine.
+  debugPrint('NOTED_MAIN_START');
   WidgetsFlutterBinding.ensureInitialized();
+  // Android: publishes by rename where SELinux refuses `link`. Before any
+  // storage is read or written (the order is checked by a test).
+  useRenamePublishOnAndroid();
   // The bundled Inter font is SIL OFL 1.1; its licence ships with it.
   LicenseRegistry.addLicense(() async* {
     yield LicenseEntryWithLineBreaks(
