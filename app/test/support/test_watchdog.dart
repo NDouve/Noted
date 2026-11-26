@@ -7,9 +7,6 @@ import 'dart:io';
 import 'dart:isolate';
 
 import 'package:flutter_test/flutter_test.dart';
-// The SDK's own test package (flutter_test depends on it, pinned with the
-// SDK); it is the only public way to read the running test's name.
-// ignore: depend_on_referenced_packages
 import 'package:test_api/hooks.dart' show TestHandle;
 
 // A watchdog for the whole app test run. The per-test timeout (`dart_test.yaml`)
