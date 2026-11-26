@@ -2440,6 +2440,29 @@ void main() {
         });
       }
 
+      test('the page evicted between the re-check\'s read and the redo\'s read of the original: the entry stays and the re-check has not failed', () async {
+        await start();
+        await withCopy();
+        await nb.checkFile(copy);
+        expect(await entries(), hasLength(1));
+        revert(); // the file lacks the copy: the re-check merges it again
+        var reads = 0;
+        void Function()? back;
+        storedReadObserver = (p) {
+          if (back != null || !p.endsWith('$id.canvas')) return;
+          if (++reads == 2) back = evict(p, stub: true); // the redo's read
+        };
+        await recheck();
+        expect(back, isNotNull, reason: 'the second read of the page was reached');
+        expect(await entries(), hasLength(1));
+        expect(nb.consumedFailedForTest.values, everyElement(isFalse), reason: 'a page that is not downloaded is not a failed re-check');
+        back!();
+        await recheck();
+        await recheck();
+        expect(await entries(), isEmpty);
+        expect(ids(), {box.id, extra.id});
+      });
+
       test('N4: a stub-only page that is listed nowhere keeps its entry', () async {
         await start();
         await withCopy();

@@ -1339,7 +1339,9 @@ class _Sim {
       retrySync(() => File(_stubOf(path)).writeAsStringSync(''));
     }
     evictExcuse.add(_norm(path));
-    if (rnd.nextBool()) await w.channel.emit('changed', {'path': path});
+    // The stub is told, as the daemon tells it: the app lists the page or its
+    // file as still downloading (checkNotAbsent).
+    await w.channel.emit('changed', {'path': evictMode == 'stub' ? _stubOf(path) : path});
   }
 
   bool _recheckChecked = false;
@@ -1357,6 +1359,8 @@ class _Sim {
         if (await _entriesOf(id) != 1) 'the entry of $id is not there',
         if (nb.consumedCopiesForTest.isEmpty || nb.consumedCopiesForTest.values.any((p) => p))
           'the mark is not there, or is parked',
+        if (nb.consumedDeletingForTest.values.any((d) => d)) 'the mark is being deleted',
+        if (nb.deleteHoldsForTest(id)) 'a delete holds $id',
         if (nb.currentId == id) '$id is open',
         if (nb.isBusy(id)) '$id is busy',
       ];
@@ -1452,9 +1456,11 @@ class _Sim {
       final id = _base(p).replaceAll('.canvas', '');
       if (!seen.contains(id)) continue; // the app never listed it
       // The pinned t3a scenario evicts as a delete first (an eviction looks like
-      // one), so the app forgot the page before its stub showed; it lists the
-      // stub at its next scan. That state is what the scenario is about.
-      if (p == consumedPath) continue;
+      // one), so the app forgot the page before its stub showed. Neither the
+      // stub's event nor a folder check (it does not rescan the pages) makes the
+      // app list the page or a "Still downloading" row: that waits for the next
+      // scan. Reported with the t3a review; the scenario is about the entry.
+      if (evictMode == 'stub' && p == consumedPath) continue;
       if (listed.contains(id) || unreadable.contains(_norm(_base(p)))) continue;
       violations.add(
         '${_base(p)} is only a stub, and the app lists neither the page nor the file',

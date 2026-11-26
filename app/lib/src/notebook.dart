@@ -1510,6 +1510,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   @visibleForTesting
   Map<String, bool> get consumedCopiesForTest => {for (final m in _consumedCopies.values) m.gen: m.parked};
 
+  /// Test seam: whether the last re-check of each consumed copy failed.
+  @visibleForTesting
+  Map<String, bool> get consumedFailedForTest => {for (final m in _consumedCopies.values) m.gen: m.failed};
+
+  /// Test seam: whether each consumed copy is being deleted.
+  @visibleForTesting
+  Map<String, bool> get consumedDeletingForTest => {for (final m in _consumedCopies.values) m.gen: m.deleting};
+
+  /// Test seam: whether a delete that Undo can still reach holds page [id].
+  @visibleForTesting
+  bool deleteHoldsForTest(String id) => _deleteHolds(id);
+
   // Kept `<id>.assets` folders that couldn't be landed, or whose page isn't
   // there, by the folder's path: why (0098).
   final Map<String, String> _keptProblems = {};
@@ -12783,7 +12795,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     await checkFile(path);
     // The file is there: the copies that waited for it as their original are
     // looked at again.
-    if (!_disposed && !isDataless(path)) await _recheckCopiesWaitingFor(path);
+    if (!_disposed && !isDataless(path)) {
+      // The open page's save that this file held lands first, so a copy's retry
+      // below merges into a file that holds the page.
+      if (id != null && id == _current?.page.id && _trouble.isTrouble && _trouble.pageId == id) {
+        await retrySave();
+      }
+      await _recheckCopiesWaitingFor(path);
+    }
     if (_disposed || id == null) return;
     if (notDownloaded(path) || await _read(path) is! StoredMissing) return;
     // The file is gone: the files listed as duplicates of its page are looked
@@ -13618,7 +13637,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final keep = _blockKeep = await _keepForRecovery(loc, st, c.page, session: s, seq: s?.seq ?? 0);
       // A recovery write that failed is the loud state, so leaving asks.
       if (s != null && identical(s, _session) && !keep.safe) {
-        _troubleFrom(s, c.page, keep, reason: "its file couldn't be read", folderGone: false);
+        _troubleFrom(s, c.page, keep, reason: why == _downloadingWhy ? 'the page file is still downloading' : "its file couldn't be read", folderGone: false);
       }
     }
     if (_disposed) return true;
@@ -13885,6 +13904,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     } on Object catch (e) {
       debugPrint('Merging conflict copy $path failed, keeping it: $e');
       _known.remove(key);
+      // The page it is a copy of is not downloaded: listed as waiting for it, and
+      // merged when it is there (on its event, or at the folder check).
+      if (e is StorageBusy && e.reason == StorageBusyReason.dataless) {
+        _passingCopies.remove(key);
+        _knownUnreadable(loc, key, path, PageStore.copyOfDatalessReason);
+        return true;
+      }
       // Retried when the original is seen and at the folder check only if the
       // failure is one that passes, by its type (not by its words).
       if (_passingFailure(e)) {
@@ -15499,13 +15525,19 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           // Only "no file and no stub" is a file that is gone; one that is not
           // downloaded is asked for and the page stays read-only (the change
           // event merges it when it is there).
-          if (await _read(path) is! StoredMissing) {
-            debugPrint('Open page $id: its file is there but cannot be read as a page.');
+          final seen = await _read(path);
+          if (seen is! StoredMissing) {
+            final downloading = seen is StoredNotDownloaded;
+            debugPrint(
+              downloading
+                  ? 'Open page $id: its file is not downloaded yet.'
+                  : 'Open page $id: its file is there but cannot be read as a page.',
+            );
             _loc[id] = loc;
             _metas[id] = c.page.meta;
             _orphanLoc = null;
             _rebuildTree();
-            await _blockOpen(loc, _key(path), await _whyUnreadable(path, id), id);
+            await _blockOpen(loc, _key(path), downloading ? _downloadingWhy : await _whyUnreadable(path, id), id);
             return (ran: false, theirs: null);
           } else {
             // Its file is gone (the page was saved before the folder went and

@@ -689,7 +689,17 @@ class ContentIdentity {
     final f = File(path);
     switch (await openStoredRead(path)) {
       case StoredOpened(:final value):
-        return ContentIdentity(await f.length(), await contentHashOfStream(value));
+        // The stream is listened to first, so its handle is closed whatever the
+        // length does.
+        final hash = contentHashOfStream(value);
+        final int length;
+        try {
+          length = await f.length();
+        } on Object {
+          await hash.then<void>((_) {}, onError: (Object _) {});
+          rethrow;
+        }
+        return ContentIdentity(length, await hash);
       case StoredRefused(result: StoredFailed(:final error)):
         throw error;
       case StoredRefused(result: StoredMissing()):
