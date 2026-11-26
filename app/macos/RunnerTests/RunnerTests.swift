@@ -436,6 +436,53 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(versions.map { $0.resolved }, [false, false])
   }
 
+  func testMatchesByEncodedIdOrDecodedIdentifierAndTheEmptyIdOnlyMatchesAVersionWithNone() {
+    let a = FakeVersion(id: "a", identifier: "A")
+    let none = FakeVersion(id: nil, identifier: "N")
+    func m(_ v: FakeVersion, _ id: String, _ wanted: Any? = nil) -> Bool {
+      CloudFolder.matches(
+        v, id: id, wanted: wanted, idOf: { $0.id }, identifierOf: { $0.identifier })
+    }
+    XCTAssertTrue(m(a, "a"))
+    XCTAssertFalse(m(a, "b"))
+    XCTAssertTrue(m(a, "encoded-2", "A"), "another archive of the same identifier")
+    XCTAssertFalse(m(a, "encoded-2", "B"))
+    XCTAssertTrue(m(none, "", nil))
+    XCTAssertFalse(m(a, "", nil), "an empty id names only a version with no identifier")
+    XCTAssertFalse(m(none, "a", nil))
+    XCTAssertTrue(m(none, "other", "N"), "a version with no encoded id still matches by identifier")
+  }
+
+  func testChangesListsAddedIdsAndSaysWhenAKnownIdIsGone() {
+    let versions = [
+      FakeVersion(id: "a", identifier: "A"), FakeVersion(id: "b", identifier: "B"),
+      FakeVersion(id: nil, identifier: "N"),
+    ]
+    let decode: (String) -> Any? = { $0 == "alias-of-b" ? "B" : nil }
+    func changes(_ known: [String]) -> (fresh: [String], shrank: Bool) {
+      CloudFolder.changes(
+        versions, known: known, idOf: { $0.id }, identifierOf: { $0.identifier }, decode: decode)
+    }
+    // Unchanged: nothing fresh, nothing gone.
+    var c = changes(["a", "b", ""])
+    XCTAssertEqual(c.fresh, [])
+    XCTAssertFalse(c.shrank)
+    // Added: the versions no known id matches, a nil identifier as "".
+    c = changes(["a"])
+    XCTAssertEqual(c.fresh, ["b", ""])
+    XCTAssertFalse(c.shrank)
+    // Removed: a known id that matches no version.
+    c = changes(["a", "b", "", "gone"])
+    XCTAssertEqual(c.fresh, [])
+    XCTAssertTrue(c.shrank)
+    // Decoded-equivalent: another archive of B's identifier is B.
+    c = changes(["a", "alias-of-b", ""])
+    XCTAssertEqual(c.fresh, [])
+    XCTAssertFalse(c.shrank)
+    // Nothing known: everything is fresh.
+    XCTAssertEqual(changes([]).fresh, ["a", "b", ""])
+  }
+
   // MARK: Copying a version: exclusive, never replacing
 
   func testACopyIsMadeExclusivelyBesideTheTargetWithTheVersionsBytes() throws {
@@ -515,7 +562,7 @@ class RunnerTests: XCTestCase {
   func testThePresenterReportsChangesAndBothPathsOfAMove() {
     let folder = URL(fileURLWithPath: "/d/Notes")
     let seen = Recorder<[String?]>()
-    let presenter = FolderPresenter(url: folder) { path, to in seen.add([path, to]) }
+    let presenter = FolderPresenter(url: folder) { path, to, _ in seen.add([path, to]) }
     XCTAssertEqual(presenter.presentedItemURL, folder)
     presenter.presentedItemDidChange()
     presenter.presentedSubitemDidAppear(at: URL(fileURLWithPath: "/d/Notes/new.canvas"))

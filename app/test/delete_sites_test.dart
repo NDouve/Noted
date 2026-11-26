@@ -444,6 +444,8 @@ const List<Site> writeSites = [
     '$_outsideMark: the sync working folder, app-private on the device and never an iCloud root',
   ),
   ('app/lib/src/icloud_folders.dart', 'await part.writeAsBytes(nonce, flush: true);', 1, '$_tempMark: the probe\'s source, a fresh random name published by publishExclusive'),
+  ('app/lib/src/icloud_folders.dart', 'await s.create(exclusive: true);', 1, '$_tempMark: the staged twin of a version temp, a fresh random name published or removed (checked) by the landing'),
+  ('app/lib/src/icloud_folders.dart', 'await s.writeAsBytes(bytes, flush: true);', 1, '$_tempMark: the staged twin of a version temp, a fresh random name published or removed (checked) by the landing'),
   ('app/lib/src/icloud_folders.dart', 'await file.parent.create(recursive: true);', 1, _appState),
   ('app/lib/src/icloud_folders.dart', 'await tmp.writeAsBytes(bytes, flush: true);', 2, _appTemp),
   ('app/lib/src/icloud_folders.dart', 'await t2.writeAsBytes(fresh, flush: true);', 1, _appTemp),

@@ -105,6 +105,7 @@ void main() {
       'coordinate',
       'versions',
       'resolveVersion',
+      'withVersions',
       'startDownloading',
       'changed',
       'failed',
@@ -204,6 +205,66 @@ void main() {
     );
     expect(accessor, contains('CloudFolder.outcome('));
     expect(accessor, contains('CloudFolder.runBlock('));
+  });
+
+  String code() => _read(ios).split('\n').where((l) => !l.trim().startsWith('//')).join('\n');
+
+  // The body of the `case "<name>":` of the channel's switch, up to the next case.
+  String caseOf(String name) {
+    final text = code();
+    final start = text.indexOf('case "$name":');
+    expect(start, greaterThan(-1), reason: name);
+    final next = text.indexOf(RegExp(r'\n    case "'), start + 1);
+    return text.substring(start, next);
+  }
+
+  test('withVersions is documented, reads metadata on a global queue, answers on main and matches by `matches`', () {
+    expect(_read(ios), contains('//   withVersions({items})'));
+    final call = caseOf('withVersions');
+    expect(call, contains('DispatchQueue.global(qos: .userInitiated).async'));
+    expect(call, contains('DispatchQueue.main.async { result(out) }'));
+    expect(call, contains('bad(result, "items")'));
+    final text = code();
+    final changes = text.substring(text.indexOf('static func changes<V>('));
+    expect(changes.substring(0, changes.indexOf('\n  }\n')), contains('matches('));
+    // It is metadata only: no coordination, no copy, no resolve.
+    final list = text.substring(text.indexOf('private func versionChanges('));
+    final body = list.substring(0, list.indexOf('\n  }\n'));
+    expect(body, isNot(contains('NSFileCoordinator')));
+    expect(body, isNot(contains('copyVersion')));
+    expect(body, isNot(contains('isResolved')));
+    // The one matching rule is shared by resolveVersion, versions and withVersions.
+    final resolve = text.substring(text.indexOf('static func resolveMatching<V>('));
+    expect(resolve.substring(0, resolve.indexOf('\n  }\n')), contains('CloudFolder.matches('));
+  });
+
+  test('versions reads known, and a known that is not a list of strings is an arguments error', () {
+    final call = caseOf('versions');
+    expect(call, contains('args["known"]'));
+    expect(call, contains('raw as? [String]'));
+    expect(call, contains('bad(result, "known")'));
+    expect(call, contains('copyVersions(path: path, known: known)'));
+    final text = code();
+    final collect = text.substring(text.indexOf('static func collectVersions<V>('));
+    final body = collect.substring(0, collect.indexOf('\n  }\n'));
+    expect(body, contains('knownOf'));
+    expect(body, contains('"known": true'));
+    // The known match runs before the nil identifier guard.
+    expect(body.indexOf('knownOf(version)'), lessThan(body.indexOf('guard let id = idOf(version)')));
+    // "" matches only a version with no identifier, and resolveVersion refuses it.
+    final matches = text.substring(text.indexOf('static func matches<V>('));
+    expect(matches.substring(0, matches.indexOf('\n  }\n')), contains('if id.isEmpty { return own == nil }'));
+    final resolve = text.substring(text.indexOf('private func resolveVersion('));
+    expect(resolve.substring(0, resolve.indexOf('let url')), contains('if id.isEmpty { return false }'));
+  });
+
+  test('didGain sends changed with version: true, and no other presenter callback does', () {
+    final text = code();
+    final gain = RegExp(r'func presentedSubitem\(at url: URL, didGain version: NSFileVersion\) \{ emit\(url\.path, nil, true\) \}');
+    expect(gain.hasMatch(text), isTrue);
+    expect(RegExp(r'emit\([^)]*, true\)').allMatches(text), hasLength(1));
+    expect(text, contains('if version { args["version"] = true }'));
+    expect(_read(ios), contains('//   changed({path, to?, version?})'));
   });
 
   test('the two RunnerTests files differ only in their imports', () {

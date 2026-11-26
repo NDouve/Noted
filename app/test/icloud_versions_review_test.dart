@@ -67,11 +67,11 @@ void main() {
     final g = await w.relaunched();
     Directory(w.path('Binder/p.assets')).createSync(recursive: true);
     w.write('Binder/p.assets/.${name()}.noted-version-0123456789abcdef.tmp', good);
-    await g.landLeftoverTemps();
+    await g.scanForVersions();
     expect(File(w.path('Binder/p.assets/${name()}')).readAsStringSync(), good);
     expect(temps('Binder/p.assets'), isEmpty);
     w.write('Binder/p.assets/.${name()}x.noted-version-0123456789abcde0.tmp', 'x');
-    await g.landLeftoverTemps();
+    await g.scanForVersions();
     expect(temps('Binder/p.assets'), hasLength(1), reason: 'once in tempScanAfter');
   });
 
@@ -208,7 +208,7 @@ void main() {
       // Every entry point: a direct landing, the launch pass, the temp scan, a change event.
       await f.landVersions([file.path]);
       await f.landAllVersions();
-      await f.landLeftoverTemps();
+      await f.scanForVersions();
       await w.channel.emit('changed', {'path': file.path});
       // And a pending answer: the delete is refused, its landing is skipped.
       await expectLater(deleteFileIfMatches(file.path, bytes: b('current')), throwsA(isA<StorageBusy>()));
@@ -224,6 +224,8 @@ void main() {
       await waitFor(() => f.checkOf(w.drive.path) == CloudRootCheck.passed, what: 'the self-test');
       await waitFor(() => w.channel.unresolvedOf(file.path).isEmpty, what: 'the landing');
       expect(w.names().where((n) => n.contains('-icloud-')), hasLength(1));
+      // t2b: the catch-up of a root that passed its self-test lands it.
+      expect([for (final l in f.debugVersionLandings) l.reason], contains(VersionLandReason.catchUp));
     });
 
     test('a root whose access was lost gets nothing', () async {

@@ -79,16 +79,20 @@ const List<String> _killKinds = [
   'saveNew:beforePublish',
   'server:beforePublish',
   'server:beforeAsideDelete',
+  'landing:equal', // a version equal to the file, not yet resolved
+  'landing:reread', // resolved, the holder not yet read again
 ];
 
 /// What each kill kind needs to happen at least once in a sequence.
 const Map<String, List<String>> _feeders = {
   'coordinate': ['appEdit'],
-  'versionTemp': ['daemonConflict', 'landAll'],
-  'landing:copied': ['daemonConflict', 'landAll'],
-  'landing:published': ['daemonConflict', 'landAll'],
-  'landing:verified': ['daemonConflict', 'landAll'],
-  'landing:resolved': ['daemonConflict', 'landAll'],
+  'versionTemp': ['daemonConflict', 'appCheck'],
+  'landing:copied': ['daemonConflict', 'appCheck'],
+  'landing:published': ['daemonConflict', 'appCheck'],
+  'landing:verified': ['daemonConflict', 'appCheck'],
+  'landing:resolved': ['daemonConflict', 'appCheck'],
+  'landing:equal': ['daemonEqualConflict', 'appCheck'],
+  'landing:reread': ['daemonConflict', 'daemonConflict', 'daemonConflict'],
   'replace:beforeMoveAside': ['appEdit', 'appEdit'],
   'replace:beforePublish': ['appEdit', 'appEdit'],
   'replace:beforeAsideDelete': ['appEdit', 'appEdit'],
@@ -665,7 +669,7 @@ class _Sim {
       }
     }
     if (read && _datalessNow(path) && !_justEvicted(path)) {
-      violations.add('read of a dataless file: $op ${_base(path)}');
+      violations.add('read of a dataless file: $op ${_base(path)}\n${_appFrames()}');
     }
     if (write) {
       final target = to ?? path;
@@ -695,6 +699,8 @@ class _Sim {
 
   Future<void> _boot() async {
     await w.init();
+    // The folder access runs on a clock the sequence moves (the backstop).
+    w.clock = FakeClock();
     snapRoot = await Directory.systemTemp.createTemp('noted_icloud_snaps');
     f = await w.picked();
     _wrap();
@@ -726,7 +732,18 @@ class _Sim {
   void channelHooks() {
     w.channel.onVersions = (path, temps) => point('versionTemp');
     f.landingStep = (step, path) async => point('landing:$step');
+    // What the daemon or another device does inside the resolve call (t3c).
+    w.channel.onResolve = (path, id) {
+      // A landing of a process that was killed does nothing to the world.
+      final tag = Zone.current[#life];
+      if (tag != null && tag != life) return;
+      resolveActs.remove(id)?.call();
+    };
   }
+
+  /// One-shot replaces armed by the conflict ops, run when the landing resolves
+  /// the version with that id.
+  final Map<String, void Function()> resolveActs = {};
 
   void _wrap() {
     unregisterCoordinator(drivePath);
@@ -991,6 +1008,8 @@ class _Sim {
         await daemonEdit();
       case 'daemonConflict':
         await daemonConflict();
+      case 'daemonEqualConflict':
+        await daemonEqualConflict();
       case 'daemonEvict':
         await daemonEvict();
       case 'daemonMaterialize':
@@ -1132,6 +1151,9 @@ class _Sim {
     if (rnd.nextBool()) await w.channel.emit('changed', {'path': file.path});
   }
 
+  /// Whether the planned kill is in a landing, which an event starts.
+  bool get _feedsLanding => killKind.startsWith('landing:') || killKind == 'versionTemp';
+
   Future<void> daemonConflict() async {
     final file = pick((f) => true);
     if (file == null) return;
@@ -1146,15 +1168,69 @@ class _Sim {
       return;
     }
     daemonWrite(file, writePage(current.insertNode(box(a))));
-    final id = w.channel.addVersion(
-      file.path,
-      utf8.encode(writePage(current.insertNode(box(b)))),
-    );
+    final versionText = writePage(current.insertNode(box(b)));
+    final id = w.channel.addVersion(file.path, utf8.encode(versionText));
     versions.add((path: file.path, id: id));
     claim(a, 'a daemon replace of ${_base(file.path)}');
     claim(b, 'a conflict version of ${_base(file.path)}');
     versionOfMarker[b] = versions.last;
-    if (rnd.nextBool()) await w.channel.emit('changed', {'path': file.path});
+    final interfere = rnd.nextBool();
+    if (interfere) {
+      // Inside the landing's resolve the copy of the version is replaced by a
+      // page without the version's marker (and with one of its own): the
+      // version is let go only once a file holds its bytes.
+      final c = marker();
+      resolveActs[id] = () {
+        final copy = _copyHolding(file, versionText);
+        if (copy == null) return;
+        daemonWrite(copy, writePage(current.insertNode(box(c))));
+        unawaited(w.channel.emit('changed', {'path': copy.path})); // as a daemon's write is announced
+        claim(c, 'a daemon replace of the copy of a version of ${_base(file.path)}');
+      };
+    }
+    // A conflict that feeds a landing kill is always told: the event is what lands it.
+    final told = rnd.nextBool() || _feedsLanding;
+    if (told) await w.channel.emit('changed', {'path': file.path});
+  }
+
+  /// The copy (`<stem>-icloud-<h>.canvas`) of [file] that holds [text], if one does.
+  File? _copyHolding(File file, String text) {
+    final hash = contentHash(utf8.encode(text));
+    final stem = _base(file.path).replaceAll('.canvas', '');
+    for (final n in [8, 16]) {
+      final copy = File('${file.parent.path}/$stem-icloud-${hash.substring(0, n)}.canvas');
+      if (copy.existsSync() && readText(copy) == text) return copy;
+    }
+    return null;
+  }
+
+  /// A version equal to the file. Inside the landing's resolve the file may be
+  /// replaced by an earlier page, without the newest marker it holds.
+  Future<void> daemonEqualConflict() async {
+    final file = pick((f) => true);
+    if (file == null) return;
+    final text = readText(file);
+    if (text == null) return;
+    final id = w.channel.addVersion(file.path, utf8.encode(text));
+    versions.add((path: file.path, id: id));
+    if (rnd.nextBool()) {
+      final held = [
+        for (final m in RegExp('m$seed-\\d{4}').allMatches(text))
+          if (durable.containsKey(m.group(0))) m.group(0)!,
+      ]..sort();
+      if (held.isNotEmpty) {
+        final newest = held.last;
+        resolveActs[id] = () {
+          // Only a file still as the version is: another state is not "the
+          // earlier base" of anything.
+          if (readText(file) != text) return;
+          daemonWrite(file, writePage(readPage(text).removeNode(box(newest).id)));
+        };
+      }
+    }
+    // A conflict that feeds a landing kill is always told: the event is what lands it.
+    final told = rnd.nextBool() || _feedsLanding;
+    if (told) await w.channel.emit('changed', {'path': file.path});
   }
 
   Future<void> daemonEvict() async {
@@ -1171,7 +1247,7 @@ class _Sim {
     if (rnd.nextBool()) await w.channel.emit('changed', {'path': file.path});
   }
 
-  Future<void> daemonMaterialize({String? path}) async {
+  Future<void> daemonMaterialize({String? path, bool told = false}) async {
     final target =
         path ??
         (evicted.isEmpty
@@ -1185,7 +1261,7 @@ class _Sim {
       final stub = File(_stubOf(target));
       if (stub.existsSync()) stub.deleteSync();
     });
-    if (rnd.nextBool()) await w.channel.emit('changed', {'path': target});
+    if (rnd.nextBool() || told) await w.channel.emit('changed', {'path': target});
   }
 
   Future<void> daemonNewPage() async {
@@ -1307,20 +1383,93 @@ class _Sim {
 
   // -- The end ---------------------------------------------------------------------------
 
+  /// The told and the missed conflict (t2b): two pages of their own, closed,
+  /// materialised, with no row, no recovery entry, not a copy or a leftover,
+  /// that nothing later touches. Each gets a version of the daemon's; the told
+  /// one's change event is delivered, the missed one's is not.
+  File? toldFile;
+  File? missedFile;
+
+  Future<void> finalConflicts() async {
+    phase = 'final conflicts';
+    await f.versionAskIdle;
+    File page(String tag) {
+      final id = 'd$seed$tag';
+      final m = marker();
+      final file = File('$drivePath/$id.canvas');
+      daemonWrite(
+        file,
+        writePage(NotedPage.create(PageMeta.create(id: id, title: 'Page $id', order: 80 + _counter)).insertNode(box(m))),
+      );
+      claim(m, 'the page of a $tag conflict');
+      pageIds.add(id);
+      return file;
+    }
+
+    void conflict(File file, String what) {
+      final b = marker();
+      final id = w.channel.addVersion(
+        file.path,
+        utf8.encode(writePage(readPage(readText(file)!).insertNode(box(b)))),
+      );
+      versions.add((path: file.path, id: id));
+      claim(b, 'a $what conflict version of ${_base(file.path)}');
+      versionOfMarker[b] = versions.last;
+    }
+
+    final told = toldFile = page('told');
+    final missed = missedFile = page('missed');
+    conflict(told, 'told');
+    conflict(missed, 'missed');
+    // Only the told one is announced; the clock does not move.
+    await w.channel.emit('changed', {'path': told.path, 'version': true});
+    await f.versionAskIdle;
+    final left = w.channel.unresolvedOf(told.path);
+    final byEvent = f.debugVersionLandings.any(
+      (l) => _norm(l.path) == _norm(told.path) && l.reason == VersionLandReason.event,
+    );
+    if (left.isNotEmpty || !byEvent) {
+      fail(
+        'seed $seed (kill at $killKind #$killNth) failed: the told conflict of ${_base(told.path)} was not landed by its event '
+        '(${left.length} unresolved, landings ${[for (final l in f.debugVersionLandings) if (_norm(l.path) == _norm(told.path)) l.reason.name]})'
+        '\nsteps: ${log.join(', ')}',
+      );
+    }
+    if (w.channel.unresolvedOf(missed.path).isEmpty) {
+      fail('seed $seed: the missed conflict was landed before any scan: ${log.join(', ')}');
+    }
+  }
+
+  /// After the settle: the missed conflict was found by the backstop.
+  void checkBackstop() {
+    final missed = missedFile;
+    if (missed == null) return;
+    final left = w.channel.unresolvedOf(missed.path);
+    final byScan = f.debugVersionLandings.any(
+      (l) => _norm(l.path) == _norm(missed.path) && l.reason == VersionLandReason.backstop,
+    );
+    if (left.isNotEmpty || !byScan) {
+      fail(
+        'seed $seed (kill at $killKind #$killNth) failed: the missed conflict of ${_base(missed.path)} was not landed by the backstop '
+        '(${left.length} unresolved, landings ${[for (final l in f.debugVersionLandings) if (_norm(l.path) == _norm(missed.path)) l.reason.name]})'
+        '\nsteps: ${log.join(', ')}',
+      );
+    }
+  }
+
   Future<void> settle() async {
     phase = 'settle';
     for (final p in evicted.keys.toList()) {
-      await daemonMaterialize(path: p);
+      await daemonMaterialize(path: p, told: true); // its own event
     }
     for (var round = 0; round < 6; round++) {
-      phase = 'settle: landAll';
-      await f.landAllVersions();
-      await Future<void>.delayed(const Duration(milliseconds: 40));
-      // The presenter tells the app about every file.
-      phase = 'settle: changed events';
-      for (final e in w.drive.listSync(followLinks: false)) {
-        if (e is File) await w.channel.emit('changed', {'path': e.path});
-      }
+      // The backstop: the clock moves past the scan interval and the largest
+      // backoff, and the folder tick scans for versions (no launch pass, no
+      // event for a file the daemon did not materialise).
+      phase = 'settle: backstop';
+      w.clock!.advance(const Duration(minutes: 31));
+      await nb.folderTickForTest();
+      await f.versionAskIdle;
       phase = 'settle: checkFolders';
       await nb.checkFolders();
       phase = 'settle: scan';
@@ -1349,8 +1498,14 @@ class _Sim {
         for (final e in w.drive.listSync())
           if (e is File && _base(e.path).endsWith(asideSuffix)) e,
       ];
+      // A copy a landing published is merged by the app (0053) before it ends.
+      final copies = [
+        for (final e in w.drive.listSync())
+          if (e is File && RegExp(r'-icloud-[0-9a-f]+\.canvas$').hasMatch(_base(e.path))) e,
+      ];
       if (left.isEmpty &&
           leftovers.isEmpty &&
+          copies.isEmpty &&
           !nb.trouble.isTrouble &&
           round >= 1) {
         break;
@@ -1418,7 +1573,8 @@ class _Sim {
     for (final v in versions) {
       for (final x in w.channel.versionsOf(v.path)) {
         if (!x.resolved) {
-          problems.add('a version of ${_base(v.path)} is still unresolved');
+          final tr = [for (final t in trail) if (t.line.contains(_base(v.path))) t.line].join('\n  ');
+          problems.add('a version of ${_base(v.path)} is still unresolved; trail:\n  $tr');
         }
       }
     }
@@ -1500,6 +1656,10 @@ class _Sim {
     }
     checkSegment();
     problems.addAll(violations);
+    // t3c: no version was resolved while no temp held its bytes.
+    for (final r in w.channel.resolveViolations) {
+      problems.add('resolved without a temp holding the version: $r');
+    }
     if (problems.isNotEmpty) {
       fail(
         'seed $seed (kill at $killKind #$killNth) failed:\n${problems.take(12).join('\n')}\nsteps: ${log.join(', ')}${_lostTrail()}',
@@ -1565,6 +1725,7 @@ List<String> _plan(_Sim s) {
     'daemonEdit',
     'daemonConflict',
     'daemonConflict',
+    'daemonEqualConflict',
     'daemonEvict',
     'daemonEvict',
     'daemonMaterialize',
@@ -1575,8 +1736,6 @@ List<String> _plan(_Sim s) {
     'appCheck',
     'appCheck',
     'appCheck',
-    'landAll',
-    'landAll',
     'restart',
     'serverWrite',
   ];
@@ -1613,7 +1772,11 @@ Future<void> _sequence(
             if (s.snapshot != null) await s.crash();
           }
           if (s.snapshot != null) await s.crash();
+          // The kills are over: the last two conflicts and the settle run clean.
+          s.armed = false;
+          await s.inLife(s.finalConflicts);
           await s.inLife(s.settle);
+          s.checkBackstop();
           await s.verify();
         }
 

@@ -37,9 +37,20 @@
 //                                   or engine detach. A hold over 60 s is
 //                                   logged (NSLog) and kept.
 //   done({id}), cancel({id})        -> null. Unknown ids are ignored.
-//   versions({path})                -> one entry per unresolved conflict version:
+//   versions({path, known?})        -> one entry per unresolved conflict version:
 //                                   {id, tmpPath}, or {id, error} with no tmpPath
 //                                   for a version that could not be copied.
+//                                   known is a list of version ids (absent means
+//                                   none; present and not a list of strings is
+//                                   the error code "arguments"). A version that
+//                                   matches a known id is not copied and not
+//                                   counted against the deadline: its entry is
+//                                   {id: the first matching known string,
+//                                   known: true}. The match is the one of
+//                                   resolveVersion (an id is a string that
+//                                   names a version by its encoded identifier
+//                                   or by the identifier it decodes to), and
+//                                   "" matches a version with no identifier.
 //                                   The whole call has one 60 s deadline;
 //                                   versions not reached (or in progress) at
 //                                   the deadline come back {id, error:
@@ -58,6 +69,18 @@
 //                                   false if none matched. A coordination
 //                                   failure or a 60 s timeout is the error code
 //                                   "coordination". Never removeOtherVersions.
+//   withVersions({items})           -> {path: {fresh, shrank}}. items is a list of
+//                                   {path: String, known: [String]}; a missing or
+//                                   mistyped field is the error code "arguments".
+//                                   For each path, the unresolved versions are
+//                                   listed (none for nil): fresh holds the ids
+//                                   ("" for a nil identifier) of those that match
+//                                   no known id, shrank is true when a known id
+//                                   matches no version. Only paths with a fresh
+//                                   id or shrank true are in the answer, each
+//                                   under the path string of the request. This
+//                                   reads metadata only: nothing is coordinated,
+//                                   copied or held.
 //   startDownloading({path})        -> null (startDownloadingUbiquitousItem).
 //
 // Swift -> Dart (invokeMethod, always from the main thread, never awaited)
@@ -77,9 +100,11 @@
 //   pending({id, paths})            a move or delete intent names files that
 //                                   have unresolved versions (paths: those
 //                                   files). The block is released at once.
-//   changed({path, to?})            the presenter saw a change. `to` is set for
+//   changed({path, to?, version?})  the presenter saw a change. `to` is set for
 //                                   presentedSubitem(at:didMoveTo:): path is the
-//                                   old path and to the new one. A call that
+//                                   old path and to the new one. `version` is
+//                                   true for presentedSubitem(at:didGain:), a
+//                                   version the item gained. A call that
 //                                   spans two roots is made with the presenter of
 //                                   the longest root matching its first path, so
 //                                   the other root may echo changed events for
@@ -208,9 +233,9 @@ enum CoordinationOutcome: Equatable {
 final class FolderPresenter: NSObject, NSFilePresenter {
   let url: URL
   let queue = OperationQueue()
-  private let emit: (String, String?) -> Void
+  private let emit: (String, String?, Bool) -> Void
 
-  init(url: URL, emit: @escaping (String, String?) -> Void) {
+  init(url: URL, emit: @escaping (String, String?, Bool) -> Void) {
     self.url = url
     self.emit = emit
     queue.maxConcurrentOperationCount = 1
@@ -220,12 +245,12 @@ final class FolderPresenter: NSObject, NSFilePresenter {
   var presentedItemURL: URL? { return url }
   var presentedItemOperationQueue: OperationQueue { return queue }
 
-  func presentedItemDidChange() { emit(url.path, nil) }
-  func presentedSubitemDidAppear(at url: URL) { emit(url.path, nil) }
-  func presentedSubitemDidChange(at url: URL) { emit(url.path, nil) }
-  func presentedSubitem(at url: URL, didGain version: NSFileVersion) { emit(url.path, nil) }
+  func presentedItemDidChange() { emit(url.path, nil, false) }
+  func presentedSubitemDidAppear(at url: URL) { emit(url.path, nil, false) }
+  func presentedSubitemDidChange(at url: URL) { emit(url.path, nil, false) }
+  func presentedSubitem(at url: URL, didGain version: NSFileVersion) { emit(url.path, nil, true) }
   func presentedSubitem(at oldURL: URL, didMoveTo newURL: URL) {
-    emit(oldURL.path, newURL.path)
+    emit(oldURL.path, newURL.path, false)
   }
 }
 
@@ -345,8 +370,26 @@ final class CloudFolder: NSObject {
       result(nil)
     case "versions":
       guard let path = args["path"] as? String else { return bad(result, "path") }
+      var known: [String] = []
+      if let raw = args["known"] {
+        guard let list = raw as? [String] else { return bad(result, "known") }
+        known = list
+      }
       DispatchQueue.global(qos: .userInitiated).async {
-        let out = self.copyVersions(path: path)
+        let out = self.copyVersions(path: path, known: known)
+        DispatchQueue.main.async { result(out) }
+      }
+    case "withVersions":
+      guard let list = args["items"] as? [[String: Any]] else { return bad(result, "items") }
+      var items: [(path: String, known: [String])] = []
+      for item in list {
+        guard let p = item["path"] as? String, let k = item["known"] as? [String] else {
+          return bad(result, "items")
+        }
+        items.append((p, k))
+      }
+      DispatchQueue.global(qos: .userInitiated).async {
+        let out = self.versionChanges(items)
         DispatchQueue.main.async { result(out) }
       }
     case "resolveVersion":
@@ -406,9 +449,10 @@ final class CloudFolder: NSObject {
     defer { lock.unlock() }
     if let existing = roots[key] { return existing.started }
     let started = url.startAccessingSecurityScopedResource()
-    let presenter = FolderPresenter(url: url) { [weak self] path, to in
+    let presenter = FolderPresenter(url: url) { [weak self] path, to, version in
       var args: [String: Any] = ["path": CloudFolder.normalize(path)]
       if let to = to { args["to"] = CloudFolder.normalize(to) }
+      if version { args["version"] = true }
       self?.send("changed", args)
     }
     NSFileCoordinator.addFilePresenter(presenter)
@@ -655,29 +699,105 @@ final class CloudFolder: NSObject {
     return object
   }
 
-  private func copyVersions(path: String) -> [[String: Any]] {
+  private func copyVersions(path: String, known: [String]) -> [[String: Any]] {
     let url = URL(fileURLWithPath: path)
     guard let versions = NSFileVersion.unresolvedConflictVersionsOfItem(at: url) else { return [] }
     let deadline = Date().addingTimeInterval(60)
+    let wanted = known.map { self.decodeIdentifier($0) }
     return CloudFolder.collectVersions(
       versions,
       remaining: { deadline.timeIntervalSinceNow },
       idOf: { self.versionId($0) },
+      knownOf: { version in
+        for (i, k) in known.enumerated() {
+          if CloudFolder.matches(
+            version, id: k, wanted: wanted[i],
+            idOf: { self.versionId($0) }, identifierOf: { $0.persistentIdentifier })
+          {
+            return k
+          }
+        }
+        return nil
+      },
       copy: { self.copyVersion($0, of: url, timeout: $1) })
+  }
+
+  /// Metadata only: for each item, the ids of the unresolved versions that match
+  /// no known id (`fresh`) and whether a known id matches none (`shrank`). Only
+  /// the paths with a fresh id or `shrank` are in the answer, under the path
+  /// string of the request.
+  private func versionChanges(_ items: [(path: String, known: [String])]) -> [String: Any] {
+    var out: [String: Any] = [:]
+    for item in items {
+      let versions =
+        NSFileVersion.unresolvedConflictVersionsOfItem(at: URL(fileURLWithPath: item.path)) ?? []
+      let change = CloudFolder.changes(
+        versions, known: item.known,
+        idOf: { self.versionId($0) },
+        identifierOf: { $0.persistentIdentifier },
+        decode: { self.decodeIdentifier($0) })
+      if !change.fresh.isEmpty || change.shrank {
+        out[item.path] = ["fresh": change.fresh, "shrank": change.shrank]
+      }
+    }
+    return out
+  }
+
+  /// Whether `version` is the one `id` names: its encoded id equals `id`, or its
+  /// identifier equals the decoded `wanted`. An empty `id` matches only a
+  /// version with no encoded id.
+  static func matches<V>(
+    _ version: V, id: String, wanted: Any?,
+    idOf: (V) -> String?, identifierOf: (V) -> Any
+  ) -> Bool {
+    let own = idOf(version)
+    if id.isEmpty { return own == nil }
+    if own == id { return true }
+    if let wanted = wanted { return (identifierOf(version) as AnyObject).isEqual(wanted) }
+    return false
+  }
+
+  /// The ids ("" for none) of the versions that match no id of `known`, and
+  /// whether an id of `known` matches no version.
+  static func changes<V>(
+    _ versions: [V], known: [String],
+    idOf: (V) -> String?, identifierOf: (V) -> Any, decode: (String) -> Any?
+  ) -> (fresh: [String], shrank: Bool) {
+    let wanted = known.map { decode($0) }
+    var seen = [Bool](repeating: false, count: known.count)
+    var fresh: [String] = []
+    for version in versions {
+      var hit = false
+      for (i, k) in known.enumerated() {
+        if matches(version, id: k, wanted: wanted[i], idOf: idOf, identifierOf: identifierOf) {
+          seen[i] = true
+          hit = true
+        }
+      }
+      if !hit { fresh.append(idOf(version) ?? "") }
+    }
+    return (fresh, seen.contains(false))
   }
 
   /// One entry per version, in order: `{id, tmpPath}`, or `{id, error}` for a
   /// version with no identifier (`id` empty), one not reached before the
   /// deadline (`remaining` is zero or less: error "timeout", not copied) or one
-  /// whose copy failed.
+  /// whose copy failed. A version that `knownOf` names (a known id it matches)
+  /// is `{id: that string, known: true}`: not copied, not counted against the
+  /// deadline.
   static func collectVersions<V>(
     _ versions: [V],
     remaining: () -> TimeInterval,
     idOf: (V) -> String?,
+    knownOf: (V) -> String? = { _ in nil },
     copy: (V, TimeInterval) -> (path: String?, error: String?)
   ) -> [[String: Any]] {
     var out: [[String: Any]] = []
     for version in versions {
+      if let k = knownOf(version) {
+        out.append(["id": k, "known": true])
+        continue
+      }
       guard let id = idOf(version) else {
         out.append(["id": "", "error": "The version has no identifier."])
         continue
@@ -777,11 +897,9 @@ final class CloudFolder: NSObject {
   ) -> Bool {
     var any = false
     for version in versions {
-      var same = idOf(version) == id
-      if !same, let wanted = wanted {
-        same = (identifierOf(version) as AnyObject).isEqual(wanted)
-      }
-      if same {
+      if CloudFolder.matches(
+        version, id: id, wanted: wanted, idOf: idOf, identifierOf: identifierOf)
+      {
         resolve(version)
         any = true
       }
@@ -792,6 +910,8 @@ final class CloudFolder: NSObject {
   /// Runs on a background queue, inside a coordinated write of the item.
   /// Returns a Bool, or a FlutterError when the coordination failed or timed out.
   private func resolveVersion(path: String, id: String) -> Any {
+    // "" stands for a version with no identifier: there is nothing to match it by.
+    if id.isEmpty { return false }
     let url = URL(fileURLWithPath: path)
     let coordinator = NSFileCoordinator(filePresenter: presenter(containing: path))
     let wanted = decodeIdentifier(id)

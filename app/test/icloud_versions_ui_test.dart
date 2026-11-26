@@ -5,6 +5,7 @@
 // The row of an attachment's other iCloud version and its one action (R5.8).
 
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -53,5 +54,36 @@ void main() {
     expect(row, findsOneWidget);
     expect(keep, findsOneWidget);
     await t.pumpWidget(const SizedBox());
+  });
+
+  // t2b: another device's version of the open, idle page is found by its change
+  // event alone and merged (0053).
+  test('the idle open page gets another device\'s version by its event alone and merges it', () async {
+    final w = IcloudWorld();
+    await w.init();
+    addTearDown(w.dispose);
+    final f = await w.picked();
+    final nb = w.notebook(f);
+    await nb.load();
+    final id = nb.currentId!;
+    await nb.flush();
+    final file = File(w.path('$id.canvas'));
+    final box = BoxRecord.create(
+      id: '00000000000000b3',
+      typeId: 'x.unregistered',
+      dataVersion: 1,
+      bounds: const Bounds(300, 300, 10, 10),
+      data: const RawJson.trusted('{"k":1}'),
+      snapshotText: 's',
+      rev: 'r',
+    );
+    final theirs = writePage(readPage(file.readAsStringSync()).insertNode(box));
+    expect(nb.current!.page.node(box.id), isNull);
+    await f.landAllVersions();
+    w.channel.addVersion(file.path, utf8.encode(theirs));
+    await w.channel.emit('changed', {'path': file.path, 'version': true});
+    await waitFor(() => nb.current!.page.node(box.id) != null, what: 'the version to be landed and merged');
+    expect(w.channel.unresolvedOf(file.path), isEmpty);
+    expect(w.channel.callsOf('versions'), hasLength(1));
   });
 }
