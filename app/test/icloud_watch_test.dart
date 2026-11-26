@@ -190,6 +190,49 @@ void main() {
       expect(readPage(file.readAsStringSync()).node(box.id), isNotNull, reason: 'the copy\'s box is on the page');
     });
 
+    test('a copy whose merge was refused for a passing reason (busy) is merged when its original is looked at again, with no relaunch', () async {
+      final f = await w.picked(platform: CloudPlatform.ios);
+      await externalPage('gone1');
+      final nb = w.notebook(f);
+      await nb.load();
+      final file = File(w.path('gone1.canvas'));
+      final box = BoxRecord.create(
+        id: '00000000000000c2',
+        typeId: 'x.unregistered',
+        dataVersion: 1,
+        bounds: const Bounds(300, 300, 10, 10),
+        data: const RawJson.trusted('{"k":1}'),
+        snapshotText: 'from the copy',
+        rev: 'r',
+      );
+      final copy = File(w.path('gone1-icloud-4d5e6f70.canvas'))..writeAsStringSync(writePage(readPage(file.readAsStringSync()).insertNode(box)));
+      // The original is evicted while the merge reads it: the merge is refused as busy (dataless).
+      final original = file.readAsStringSync();
+      var evicted = false;
+      PageStore.fileReadObserver = (p) {
+        if (evicted || !p.endsWith('gone1.canvas')) return;
+        evicted = true;
+        file.deleteSync();
+        File(w.path('.gone1.canvas.icloud')).writeAsStringSync('');
+      };
+      addTearDown(() => PageStore.fileReadObserver = null);
+      await w.channel.emit('changed', {'path': copy.path});
+      await waitFor(() => nb.unreadable.any((u) => u.reason.startsWith('Could not be merged into its page')), what: 'the refused merge');
+      PageStore.fileReadObserver = null;
+      expect(evicted, isTrue, reason: 'the seam fired');
+      final row = nb.unreadable.where((u) => u.reason.startsWith('Could not be merged into its page')).toList();
+      expect(row, hasLength(1));
+      expect(row.single.reason, contains('The folder is busy'));
+      expect(copy.existsSync(), isTrue);
+      // The original materialises: the copy merges without a relaunch.
+      File(w.path('.gone1.canvas.icloud')).deleteSync();
+      file.writeAsStringSync(original);
+      await w.channel.emit('changed', {'path': file.path});
+      await waitFor(() => !copy.existsSync(), what: 'the copy to merge');
+      await waitFor(() => nb.unreadable.isEmpty, what: 'the row to go');
+      expect(readPage(file.readAsStringSync()).node(box.id), isNotNull);
+    });
+
     test('a copy of a copy beside a stub-only page waits too, and both copies\' edits land when the page arrives', () async {
       final f = await w.picked(platform: CloudPlatform.ios);
       await externalPage('gone1');

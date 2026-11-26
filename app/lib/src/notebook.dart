@@ -12618,6 +12618,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // downloaded when they were looked at) are looked at again now it is there.
   Future<void> _recheckCopiesWaitingFor(String path) => _inFlight('recheckCopiesWaitingFor', () => _recheckCopiesWaitingForInner(path));
 
+  // A copy listed "Could not be merged" for a reason that passes (the folder was
+  // busy, the original not downloaded, the files kept changing) is looked at
+  // again; one that is unreadable or invalid stays listed.
+  static bool _transientMergeFailure(String reason) =>
+      reason.startsWith('Could not be merged into its page') &&
+      // "node or box … is missing": the merged page was not what the verify read back (a writer replaced it meanwhile).
+      (reason.contains('The folder is busy') || reason.contains('keep changing') || RegExp(r'FormatException: (node|box) \w+ is missing').hasMatch(reason));
+
   Future<void> _recheckCopiesWaitingForInner(String path) async {
     final name = path.split(RegExp(r'[\/]')).last;
     final lists = [
@@ -12628,15 +12636,35 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final waiting = <String>[
       for (final list in lists)
         for (final u in list)
-          if (u.reason == PageStore.copyOfDatalessReason &&
+          if ((u.reason == PageStore.copyOfDatalessReason || _transientMergeFailure(u.reason)) &&
               conflictCopyOriginalNames(u.path.split(RegExp(r'[\/]')).last).contains(name))
             u.path,
     ];
+    await _recheckPaths(waiting);
+  }
+
+  // The copies listed as not merged for a passing reason are tried again (the
+  // folder check).
+  Future<void> _recheckTransientCopies() async {
+    final lists = [
+      _unreadable,
+      for (final f in _folders.values) f.unreadable,
+      for (final b in _binders.values) b.unreadable,
+    ];
+    await _recheckPaths(inQueue: true, [
+      for (final list in lists)
+        for (final u in list)
+          // A copy that waited for its original, which has arrived without an event.
+          if (_transientMergeFailure(u.reason) || (u.reason == PageStore.copyOfDatalessReason && !PageStore.hasDatalessOriginal(u.path))) u.path,
+    ]);
+  }
+
+  Future<void> _recheckPaths(List<String> waiting, {bool inQueue = false}) async {
     for (final p in waiting) {
       if (_disposed) return;
       _known.remove(_key(p));
       _fileStamps.remove(_key(p));
-      await checkFile(p);
+      await (inQueue ? _checkFile(p) : checkFile(p));
     }
   }
 
@@ -14944,6 +14972,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   Future<void> _checkFoldersInner() async {
     await _recheckBlocked();
+    if (_disposed) return;
+    await _recheckTransientCopies();
     if (_disposed) return;
     await _confirmGoneChosen();
     if (_disposed) return;
