@@ -9473,6 +9473,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     required DateTime deadline,
     required AiLinkCode? Function() recheck,
     Future<AiLinkCode?> Function()? confirm,
+    void Function(bool open)? onAsked,
   }) async {
     final left = deadline.difference(DateTime.now());
     if (!await aiWaitLoaded(left.isNegative ? Duration.zero : left)) return AiLinkResponse.error(AiLinkCode.busy);
@@ -9486,7 +9487,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // question that waits doesn't hold up other requests.
       final no = await _aiPrecheck(pageId, request, code, recheck);
       if (no != null) return no;
-      final refused = await confirm();
+      onAsked?.call(true);
+      final AiLinkCode? refused;
+      try {
+        refused = await confirm();
+      } finally {
+        onAsked?.call(false);
+      }
       if (refused != null) return AiLinkResponse.error(refused);
     }
     final run = _aiQueue.then((_) => _aiApply(pageId, request, code, recheck));
