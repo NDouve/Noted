@@ -6,6 +6,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter/services.dart';
 import 'package:noted/src/icloud_folders.dart';
 
@@ -130,7 +131,9 @@ class FakeCloudFolderChannel implements CloudFolderChannel {
   final List<String> resolveViolations = [];
 
   // A temp that can not be read at the moment (a sharing violation) is not
-  // proof that none holds the bytes: it counts as holding them.
+  // proof that none holds the bytes: it counts as holding them, but only when no
+  // readable temp does (the answer is true then anyway), and each such read is
+  // reported.
   bool _tempHolds(String path, List<int> bytes) {
     final f = File(path);
     final prefix = '.${f.uri.pathSegments.last}.noted-version-';
@@ -140,6 +143,7 @@ class FakeCloudFolderChannel implements CloudFolderChannel {
     } on FileSystemException {
       return true;
     }
+    var unreadable = false;
     for (final e in listed) {
       final n = e.uri.pathSegments.last;
       if (e is! File || !n.startsWith(prefix) || !n.endsWith('.tmp')) continue;
@@ -148,14 +152,18 @@ class FakeCloudFolderChannel implements CloudFolderChannel {
           final have = e.readAsBytesSync();
           if (have.length == bytes.length && [for (var i = 0; i < have.length; i++) have[i] == bytes[i]].every((x) => x)) return true;
           break;
-        } on FileSystemException {
+        } on FileSystemException catch (err) {
           if (!e.existsSync()) break; // removed meanwhile: not a holder
-          if (attempt >= 20) return true;
+          if (attempt >= 20) {
+            debugPrint('fake channel: a version temp could not be read at a resolve, counted as a holder: $n: $err');
+            unreadable = true;
+            break;
+          }
           sleep(const Duration(milliseconds: 5));
         }
       }
     }
-    return false;
+    return unreadable;
   }
 
   /// A `move` or `delete` intent on a file with unresolved versions is answered

@@ -1697,11 +1697,15 @@ class IcloudFolders extends ChangeNotifier {
         if (s.existsSync()) continue; // a name taken: another
         rethrow;
       }
-      await s.writeAsBytes(bytes, flush: true);
-      final back = await s.readAsBytes();
-      if (!_bytesEqual(back, bytes)) {
-        await _removeTemp(s.path, back);
-        throw FileSystemException('The staged copy of a version did not verify', s.path);
+      try {
+        await s.writeAsBytes(bytes, flush: true);
+        final back = await s.readAsBytes();
+        if (!_bytesEqual(back, bytes)) throw FileSystemException('The staged copy of a version did not verify', s.path);
+      } on Object {
+        // A partial twin is removed (checked, by what it holds) before the failure goes on.
+        final have = await _readOrNull(s.path);
+        if (have != null) await _removeTemp(s.path, have);
+        rethrow;
       }
       return s;
     }
