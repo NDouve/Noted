@@ -84,6 +84,7 @@ class ExportWriter {
     this.hardLinks,
     this.opener,
     this.posix,
+    this.writeProbeTemp,
     this.afterStaleIdentity,
     DateTime Function()? now,
     this.staleAfter = const Duration(days: 1),
@@ -112,6 +113,10 @@ class ExportWriter {
   /// Whether the hard-link probe is needed: null is every platform but Windows,
   /// whose publish is a move and needs no links. A seam.
   final bool? posix;
+
+  /// Writes the probe's temp; null is a plain write. A seam: a folder that
+  /// refuses the temp.
+  final Future<void> Function(File temp, Uint8List bytes)? writeProbeTemp;
 
   /// Runs between the identity of a stale temp being read and its delete. A
   /// seam: a temp that changes there survives.
@@ -271,7 +276,19 @@ class ExportWriter {
       ..add(a.path)
       ..add(linkPath);
     try {
-      await a.writeAsBytes(probe, flush: true);
+      try {
+        if (writeProbeTemp != null) {
+          await writeProbeTemp!(a, probe);
+        } else {
+          await a.writeAsBytes(probe, flush: true);
+        }
+      } on FileSystemException catch (e) {
+        // Where only the chosen file is granted (the macOS sandbox) the folder
+        // can't take a temp: no links, so the exclusive create is used.
+        final code = e.osError?.errorCode;
+        if (sandboxed || code == 1 || code == 13) return false;
+        rethrow;
+      }
       var linked = false;
       try {
         // The publish links the temp to the second name and removes the first.

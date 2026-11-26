@@ -108,7 +108,8 @@ Future<ExclusiveOutcome> createExclusive(
 
 // --- POSIX -----------------------------------------------------------------
 
-typedef _OpenC = Int32 Function(Pointer<Uint8>, Int32, Int32);
+// `open` is variadic: on Apple arm64 the mode is passed as a vararg.
+typedef _OpenC = Int32 Function(Pointer<Uint8>, Int32, VarArgs<(Int32,)>);
 typedef _OpenD = int Function(Pointer<Uint8>, int, int);
 typedef _WriteC = IntPtr Function(Int32, Pointer<Uint8>, IntPtr);
 typedef _WriteD = int Function(int, Pointer<Uint8>, int);
@@ -123,7 +124,6 @@ typedef _FreeD = void Function(Pointer<Void>);
 typedef _ErrnoC = Pointer<Int32> Function();
 typedef _ErrnoD = Pointer<Int32> Function();
 
-const int _eexist = 17;
 
 // The flag values: macOS and iOS differ from Linux and Android.
 int get _flags {
@@ -157,7 +157,8 @@ ExclusiveFile? _openPosix(String path) {
     final fd = open(p, _flags, 420); // 0644
     if (fd >= 0) return _PosixFile(libc, fd, errno, malloc, free, path);
     final e = errno().value;
-    if (e == _eexist) return null;
+    // Taken is what the file system says now (an lstat), not a separate errno read.
+    if (FileSystemEntity.typeSync(path, followLinks: false) != FileSystemEntityType.notFound) return null;
     throw FileSystemException('Could not create the file', path, OSError('open', e));
   } finally {
     free(p.cast());

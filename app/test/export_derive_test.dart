@@ -175,7 +175,7 @@ void main() {
             },
           ),
           throwsA(
-            isA<FormatException>().having(
+            isA<ExportRefused>().having(
               (e) => e.message,
               'message',
               'Huge.png is too large to convert. Export the original instead.',

@@ -6,11 +6,13 @@
 // is published exclusively, a taken name is replaced only after Noted's own
 // prompt and only if it is unchanged, and every outcome has a message.
 
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/src/export/exclusive_create.dart';
+import 'package:noted/src/export/export_names.dart';
 import 'package:noted/src/export/export_write.dart';
 import 'package:noted_core/noted_core.dart';
 
@@ -521,6 +523,71 @@ void main() {
       await write(writer(), 'x');
       expect(names(), ['out.txt']);
     });
+  });
+
+  group('a folder that refuses the probe\'s temp (the macOS sandbox)', () {
+    ExclusiveOpener ioOpener() => (p) {
+      final f = File(p);
+      try {
+        f.createSync(exclusive: true);
+      } on PathExistsException {
+        return null;
+      }
+      return _IoFile(f.openSync(mode: FileMode.writeOnly));
+    };
+
+    ExportWriter sandboxWriter({required bool sandboxed, required OSError? os}) => ExportWriter(
+      askReplace: (name) async {
+        asked.add(name);
+        return true;
+      },
+      askPutBack: (name, aside) async => true,
+      sandboxed: sandboxed,
+      posix: true,
+      opener: ioOpener(),
+      writeProbeTemp: (temp, bytes) async => throw FileSystemException('refused', temp.path, os),
+    );
+
+    test('in the sandbox any refusal means no links: the exclusive create writes the file', () async {
+      final r = await write(sandboxWriter(sandboxed: true, os: null), 'data');
+      expect(r.message, 'Exported out.txt.');
+      expect(File(target).readAsStringSync(), 'data');
+      expect(names(), ['out.txt']);
+    });
+
+    test('EPERM and EACCES mean no links outside the sandbox too, and a taken name is refused', () async {
+      for (final code in [1, 13]) {
+        File(target).writeAsStringSync('old');
+        final r = await write(sandboxWriter(sandboxed: false, os: OSError('denied', code)), 'data');
+        expect(r.message, "Choose a new name; Noted can't safely replace a file here.", reason: 'errno $code');
+        expect(asked, isEmpty);
+        expect(File(target).readAsStringSync(), 'old');
+        File(target).deleteSync();
+      }
+    });
+
+    test('another failure outside the sandbox is still a failure', () async {
+      final r = await write(sandboxWriter(sandboxed: false, os: const OSError('io', 5)), 'data');
+      expect(r.kind, ExportWriteKind.failed);
+      expect(File(target).existsSync(), isFalse);
+    });
+  });
+
+  test('a name at the cap goes through the whole writer: staging temp, probe link, replace and aside', () async {
+    final name = safeExportFileName('${'é' * 300}.txt');
+    expect(utf8.encode(name).length, lessThanOrEqualTo(exportNameMaxBytes));
+    final long = path(name);
+    final w = writer(posix: true);
+    var r = await write(w, 'one', to: long);
+    expect(r.message, 'Exported $name.');
+    r = await write(w, 'two', to: long);
+    expect(r.message, 'Exported $name.');
+    expect(File(long).readAsStringSync(), 'two');
+    expect(names(), [name]);
+    // The longest names derived from it all fit.
+    final staging = exportTempName(name);
+    expect(utf8.encode('$staging.4294967295-ffffffff-ffffffff.cas-verified').length, lessThanOrEqualTo(255));
+    expect(utf8.encode(staging.replaceFirst(RegExp(r'\.tmp$'), '.link.tmp')).length, lessThanOrEqualTo(255));
   });
 
   test('other files in the folder are byte-identical afterwards', () async {

@@ -127,3 +127,16 @@ const int exportRefusePixels = 100 * 1000 * 1000;
   }
   return (width: pw, height: ph, scale: scale);
 }
+
+/// A reason a module's [BoxModule.export] gives the user for refusing (Box API
+/// 0.18), for example an image too large to convert. The host shows only
+/// [message]. Any other exception from `export` gets the host's generic
+/// "This box can't be exported." and is logged.
+class ExportRefused implements Exception {
+  const ExportRefused(this.message);
+
+  final String message;
+
+  @override
+  String toString() => 'ExportRefused: $message';
+}

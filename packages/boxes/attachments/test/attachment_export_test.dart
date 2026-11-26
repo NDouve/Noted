@@ -149,7 +149,7 @@ void main() {
       await expectLater(
         image.export(imageData(embedded('huge.gif', _gif)), ExportFormat.png, contextOf(null)),
         throwsA(
-          isA<FormatException>().having(
+          isA<ExportRefused>().having(
             (e) => e.message,
             'message',
             'huge.gif is too large to convert. Export the original instead.',

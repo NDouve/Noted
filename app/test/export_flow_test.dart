@@ -539,6 +539,40 @@ void main() {
       await w.close(t);
     });
 
+    testWidgets('a box that becomes encrypted while the dialog is open: nothing is made or written', (t) async {
+      final w = await open(t);
+      await insert(t, w, _note('a', 'secret'));
+      final gate = Completer<void>();
+      var asking = false;
+      pickOverride = (name, f) async {
+        asking = true;
+        await gate.future;
+        return '${out.path}${Platform.pathSeparator}$name';
+      };
+      notices.clear();
+      await startExport(t, w, 'a');
+      await chooseFormat(t, 'text');
+      await until(t, () => asking);
+      final c = w.nb.current!;
+      final old = c.page.node('a')! as BoxRecord;
+      final enc = BoxRecord.create(
+        id: 'a',
+        typeId: 'noted.encrypted-note',
+        dataVersion: 1,
+        bounds: Bounds(old.bounds.x, old.bounds.y, 300, 120),
+        data: RawJson.encode('cipher'),
+        snapshotText: '',
+        rev: 'r',
+      );
+      c.applyExternal(c.page.replaceNode(enc), save: false);
+      await t.pump();
+      gate.complete();
+      await until(t, () => notices.isNotEmpty);
+      expect(notices.single, 'Encrypted box');
+      expect(out.listSync(), isEmpty);
+      await w.close(t);
+    });
+
     testWidgets('the page changing while the dialog is open stops the export', (t) async {
       final w = await open(t);
       await insert(t, w, _note('a', 'text'));

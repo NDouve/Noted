@@ -66,7 +66,7 @@ String exportTooLargeMessage(String name) => '$name is too large to convert. Exp
 /// Decodes the image in [bytes] (the first frame of a GIF) at a size within
 /// [exportMaxSide] and [exportMaxPixels], never larger: the size is read
 /// first, and the codec decodes straight to the target size. An image over
-/// [exportRefusePixels] is refused before any decode with a [FormatException]
+/// [exportRefusePixels] is refused before any decode with a [ExportRefused]
 /// carrying [exportTooLargeMessage] for [name]. The caller disposes the image.
 /// Throws another exception when the bytes don't decode.
 Future<ui.Image> decodeWithinCap(Uint8List bytes, String name) async {
@@ -74,7 +74,7 @@ Future<ui.Image> decodeWithinCap(Uint8List bytes, String name) async {
   try {
     final w = source.width, h = source.height;
     if (w <= 0 || h <= 0 || w * h > exportRefusePixels) {
-      throw FormatException(exportTooLargeMessage(name));
+      throw ExportRefused(exportTooLargeMessage(name));
     }
     final r = exportRasterSize(ui.Size(w.toDouble(), h.toDouble()), 1);
     final codec = await source.instantiateCodec(targetWidth: r.width, targetHeight: r.height);

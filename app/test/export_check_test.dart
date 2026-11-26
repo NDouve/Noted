@@ -98,8 +98,9 @@ class _DownloadStore extends _Store implements DownloadingAttachmentStore {
   final Map<String, AttachmentDownload> state = {};
   @override
   AttachmentDownload download(String fileName) => state[fileName] ?? AttachmentDownload.onDevice;
+  final Map<String, String> errors = {};
   @override
-  String? downloadError(String fileName) => null;
+  String? downloadError(String fileName) => errors[fileName];
   @override
   void retryDownload(String fileName) {}
 }
@@ -221,14 +222,16 @@ void main() {
       expect(await run(ref(file: '../x.pdf'), store), 'File not found: Plan.pdf');
     });
 
-    test('downloading and failed downloads say downloading', () async {
+    test('downloading says so; a failed download says it failed, with the reason', () async {
       final store = _DownloadStore();
       final r = ref();
       store.folder[r.file!] = bytes;
       store.state[r.file!] = AttachmentDownload.downloading;
       expect(await run(r, store), 'Plan.pdf is downloading. Try again in a moment.');
       store.state[r.file!] = AttachmentDownload.failed;
-      expect(await run(r, store), 'Plan.pdf is downloading. Try again in a moment.');
+      expect(await run(r, store), "Can't download Plan.pdf.");
+      store.errors[r.file!] = 'The server said no.';
+      expect(await run(r, store), "Can't download Plan.pdf. The server said no.");
     });
 
     test('absent or short is still syncing, with or without a downloading store', () async {

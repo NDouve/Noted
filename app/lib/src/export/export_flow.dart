@@ -118,7 +118,12 @@ Future<ExportCheck> checkBoxForExport(ExportTarget target, String boxId) async {
 Future<String?> _fileProblem(AttachmentRef ref, AttachmentStore? store) async {
   final name = ref.name;
   if (attachmentNameInvalid(ref)) return 'File not found: $name';
-  if (downloadOf(ref, store) != AttachmentDownload.onDevice) {
+  final download = downloadOf(ref, store);
+  if (download == AttachmentDownload.failed) {
+    final why = store is DownloadingAttachmentStore ? store.downloadError(ref.file!) : null;
+    return "Can't download $name.${why == null || why.isEmpty ? '' : ' $why'}";
+  }
+  if (download != AttachmentDownload.onDevice) {
     return '$name is downloading. Try again in a moment.';
   }
   return switch (await verifyAttachment(ref, store)) {
@@ -285,9 +290,13 @@ Future<void> runExportCommand(
       final bytes = await _makeBytes(context, again, check, format!);
       if (bytes == null) say('Nothing was exported.');
       return bytes;
-    } on FormatException catch (e) {
+    } on ExportRefused catch (e) {
       // A module's own refusal (an image too large to convert).
       say(e.message);
+      return null;
+    } on Object catch (e, s) {
+      debugPrint('Export of ${check.label} failed: $e\n$s');
+      say("This box can't be exported.");
       return null;
     }
   });

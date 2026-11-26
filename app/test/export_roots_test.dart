@@ -13,6 +13,7 @@ import 'package:noted/src/app_settings.dart';
 import 'package:noted/src/export/export_roots.dart';
 import 'package:noted/src/export/export_targets.dart';
 import 'package:noted/src/notebook.dart';
+import 'support/notebook_folder.dart';
 import 'package:noted_core/noted_core.dart';
 
 void main() {
@@ -30,11 +31,7 @@ void main() {
       cacheDirectory: Directory(at('app${sep}cache')),
       templatesDirectory: Directory(at('app${sep}templates')),
     );
-    addTearDown(() async {
-      nb.dispose();
-      await Future<void>.delayed(const Duration(milliseconds: 100));
-      dir.deleteSync(recursive: true);
-    });
+    addTearDown(() => deleteTestFolder(dir, notebooks: [nb]));
     await nb.loadChecked();
     final binder = await nb.addBinder((Directory(at('Work'))..createSync()).path);
     final settings = AppSettings(File(at('app${sep}settings.json')));
@@ -68,5 +65,17 @@ void main() {
       expect(check.refuses('$local${sep}Noted${sep}mcp${sep}x.txt'), isTrue);
       expect(check.refuses('$local${sep}Noted${sep}x.txt'), isTrue);
     }
+  });
+
+  test('the .noted folder in the home folder is refused on Linux and macOS', () async {
+    final dir = Directory.systemTemp.createTempSync('noted_export_roots2');
+    final nb = Notebook(PageStore(Directory('${dir.path}/pages')..createSync()), buildModules());
+    addTearDown(() => deleteTestFolder(dir, notebooks: [nb]));
+    for (final os in ['linux', 'macos']) {
+      final roots = exportRefusedRoots(nb, environment: {'HOME': '${dir.path}/home'}, platform: os);
+      expect(roots, contains('${dir.path}/home${Platform.pathSeparator}.noted'), reason: os);
+    }
+    final windows = exportRefusedRoots(nb, environment: {'HOME': '${dir.path}/home'}, platform: 'windows');
+    expect(windows, isNot(contains('${dir.path}/home${Platform.pathSeparator}.noted')));
   });
 }

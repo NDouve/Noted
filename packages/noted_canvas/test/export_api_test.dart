@@ -316,7 +316,7 @@ void main() {
       await expectLater(
         decodeWithinCap(Uint8List(0), 'huge.png'),
         throwsA(
-          isA<FormatException>().having(
+          isA<ExportRefused>().having(
             (e) => e.message,
             'message',
             'huge.png is too large to convert. Export the original instead.',

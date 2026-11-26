@@ -48,9 +48,9 @@ void main() {
     final out = safeExportFileName(long);
     expect(utf8.encode(out).length, lessThanOrEqualTo(exportNameMaxBytes));
     expect(out, endsWith('.docx'));
-    expect(exportNameMaxBytes, 255 - 48);
+    expect(exportNameMaxBytes, 255 - 80);
     // The longest name derived from it: <name>.<pid>-<random>.cas-verified.
-    final derived = '$out.12345678-ffffffff-ffffffff.cas-verified';
+    final derived = '.$out.noted-export-0123456789abcdef.tmp.4294967295-ffffffff-ffffffff.cas-verified';
     expect(utf8.encode(derived).length, lessThanOrEqualTo(255));
     // A cut never splits a character.
     expect(() => utf8.decode(utf8.encode(out)), returnsNormally);

@@ -94,7 +94,8 @@ module that lists `png` gets JPEG and PDF from the host. For a picture of its
 read-only view it calls `ExportContext.renderView()`; the view is then built
 with `BoxContext.offscreen` true, so keep it out of anything that tracks the
 boxes the user works in. To tell the user why an export can't be made, throw a
-`FormatException` with the message from `export`.
+`ExportRefused` with the message from `export`; any other exception gets the
+host's generic "This box can't be exported."
 
 ## Testing a module
 

@@ -117,7 +117,7 @@ final class ImageModule extends BoxModule<ImageData?> {
 
   /// The original file (read and checked by [readAttachment]), or a PNG: a PNG
   /// original unchanged, any other image decoded within the export caps (a
-  /// GIF's first frame); one over 100 MP is refused with a [FormatException]
+  /// GIF's first frame); one over 100 MP is refused with a [ExportRefused]
   /// whose message the host shows.
   @override
   Future<ExportedFile?> export(ImageData? data, ExportFormat format, ExportContext context) async {
@@ -137,7 +137,7 @@ final class ImageModule extends BoxModule<ImageData?> {
           } finally {
             image.dispose();
           }
-        } on FormatException {
+        } on ExportRefused {
           rethrow;
         } on Object {
           return null;
