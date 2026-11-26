@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
@@ -47,6 +48,25 @@ final class AiModule extends BoxModule<AiBoxData> {
   @override
   Widget buildView(BuildContext context, BoxContext<AiBoxData> box) =>
       _AiBox(box: box, editable: false, access: access);
+
+  @override
+  List<ExportFormat> exportFormats(AiBoxData data) =>
+      const [ExportFormat.text, ExportFormat.markdown, ExportFormat.html, ExportFormat.png];
+
+  /// As a note box, without the `<ai-written>` markers that the box'"'"'s
+  /// snapshot text has.
+  @override
+  Future<ExportedFile?> export(AiBoxData data, ExportFormat format, ExportContext context) async =>
+      switch (format.id) {
+        'text' => ExportedFile('', utf8.encode(noteToMarkdown(data.json))),
+        'markdown' => ExportedFile('', utf8.encode(noteToMarkdown(data.json, export: true))),
+        'html' => ExportedFile('', utf8.encode(noteToHtml(data.json))),
+        'png' => switch (await context.renderView()) {
+          final png? => ExportedFile('', png),
+          _ => null,
+        },
+        _ => null,
+      };
 
   @override
   List<Command> commands(CommandHost host) => [
@@ -271,6 +291,8 @@ final class _NoteBox implements BoxContext<NoteData> {
   AttachmentStore? get attachments => _b.attachments;
   @override
   void insertFilesBeside(List<IncomingFile> files) => _b.insertFilesBeside(files);
+  @override
+  bool get offscreen => _b.offscreen;
 }
 
 /// Below this width the header drops its words and keeps the icons.

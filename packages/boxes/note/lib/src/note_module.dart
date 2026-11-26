@@ -62,6 +62,25 @@ final class NoteModule extends BoxModule<NoteData> {
   @override
   List<Command> commands(CommandHost host) => noteCommands(host);
 
+  @override
+  List<ExportFormat> exportFormats(NoteData data) =>
+      const [ExportFormat.text, ExportFormat.markdown, ExportFormat.html, ExportFormat.png];
+
+  /// The note as plain text, escaped markdown or a standalone page, from the
+  /// saved data, or as the host'"'"'s picture of its read-only view.
+  @override
+  Future<ExportedFile?> export(NoteData data, ExportFormat format, ExportContext context) async =>
+      switch (format.id) {
+        'text' => ExportedFile('', utf8.encode(const NoteCodec().snapshotText(data))),
+        'markdown' => ExportedFile('', utf8.encode(noteToMarkdown(data.document, export: true))),
+        'html' => ExportedFile('', utf8.encode(noteToHtml(data.document))),
+        'png' => switch (await context.renderView()) {
+          final png? => ExportedFile('', png),
+          _ => null,
+        },
+        _ => null,
+      };
+
   /// The file name suffix of the import file the app hands over: the blocks
   /// of a note as `{"version":1,"blocks":[...]}` (an agreement between the
   /// app's import and this module, not part of the Box API). [fileAffinity]
@@ -131,6 +150,10 @@ class _NoteEditor extends StatefulWidget {
   @override
   State<_NoteEditor> createState() => _NoteEditorState();
 }
+
+/// How many note views of box [boxId] are registered as live (not offscreen).
+@visibleForTesting
+int noteLiveCount(String boxId) => _NoteEditorState._live[boxId]?.length ?? 0;
 
 /// Test hook: when false every note keeps its editor (the light view is never
 /// used), so a test can compare the two.
@@ -215,7 +238,9 @@ class _NoteEditorState extends State<_NoteEditor>
     super.initState();
     installMathSlicing();
     installLinkGuard();
-    (_live[widget.box.boxId] ??= []).add(this);
+    // A view drawn only to be rasterised for an export is not a box the user
+    // works in (Box API 0.18).
+    if (!widget.box.offscreen) (_live[widget.box.boxId] ??= []).add(this);
     _focus.addListener(_focusChanged);
     widget.box.find.addListener(_findChanged);
     // The host's hold on the editor focus (an app menu has it for a moment).

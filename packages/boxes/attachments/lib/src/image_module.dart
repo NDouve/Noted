@@ -112,6 +112,41 @@ final class ImageModule extends BoxModule<ImageData?> {
   ];
 
   @override
+  List<ExportFormat> exportFormats(ImageData? data) =>
+      data == null ? const [] : const [ExportFormat.original, ExportFormat.png];
+
+  /// The original file (read and checked by [readAttachment]), or a PNG: a PNG
+  /// original unchanged, any other image decoded within the export caps (a
+  /// GIF's first frame); one over 100 MP is refused with a [FormatException]
+  /// whose message the host shows.
+  @override
+  Future<ExportedFile?> export(ImageData? data, ExportFormat format, ExportContext context) async {
+    if (data == null) return null;
+    final read = await readAttachment(data.ref, context.attachments);
+    final bytes = read.bytes;
+    if (bytes == null) return null;
+    switch (format.id) {
+      case 'original':
+        return ExportedFile(data.ref.name, bytes);
+      case 'png':
+        if (isPngBytes(bytes)) return ExportedFile('', bytes);
+        try {
+          final image = await decodeWithinCap(bytes, data.ref.name);
+          try {
+            return ExportedFile('', await imageToPng(image));
+          } finally {
+            image.dispose();
+          }
+        } on FormatException {
+          rethrow;
+        } on Object {
+          return null;
+        }
+    }
+    return null;
+  }
+
+  @override
   Widget buildEditor(BuildContext context, BoxContext<ImageData?> box) =>
       _ImageBox(box: box, editable: true);
 

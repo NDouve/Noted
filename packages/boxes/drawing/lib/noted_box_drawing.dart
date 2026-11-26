@@ -7,7 +7,9 @@ library;
 
 export 'src/drawing_codec.dart';
 export 'src/drawing_commands.dart' show penColorCommandId, penWidthCommandId;
+export 'src/drawing_export.dart' show drawingToPng, drawingToSvg;
 export 'src/drawing_module.dart';
 export 'src/ink_color.dart';
+export 'src/stroke_render.dart' show strokeOutline, strokeOutlinePoints;
 export 'src/drawing_tools.dart'
     show EraserTool, PenSettings, PenTool, eraserRadius, joinDistance;

@@ -2,6 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
@@ -33,6 +35,14 @@ final class StickyLabelModule extends BoxModule<StickyLabelData> {
 
   @override
   BoxCodec<StickyLabelData> get codec => const StickyLabelCodec();
+
+  /// An example for module authors: the label's text.
+  @override
+  List<ExportFormat> exportFormats(StickyLabelData data) => const [ExportFormat.text];
+
+  @override
+  Future<ExportedFile?> export(StickyLabelData data, ExportFormat format, ExportContext context) async =>
+      format.id == 'text' ? ExportedFile('', utf8.encode(const StickyLabelCodec().snapshotText(data))) : null;
 
   /// The live box, shown when the page is editable.
   @override

@@ -116,6 +116,7 @@ class _FakeBox implements BoxContext<NoteData> {
     double width = 340,
     double height = 600,
     BoxFind? find,
+    this.offscreen = false,
   }) : bounds = Rect.fromLTWH(0, 0, width, height),
        find = ValueNotifier<BoxFind?>(find);
 
@@ -131,6 +132,8 @@ class _FakeBox implements BoxContext<NoteData> {
   final bool autoHeight = false;
   @override
   final bool autofocus = false;
+  @override
+  final bool offscreen;
   @override
   final ValueNotifier<BoxFind?> find;
 
@@ -931,6 +934,34 @@ void main() {
       expect(find.byType(AppFlowyEditor), findsNothing);
       expect(find.textContaining('read only', findRichText: true), findsOneWidget);
     });
+  });
+
+  // Box API 0.18: a view drawn only to be rasterised for an export is not a box
+  // the user works in, so it stays out of the live registry (linkAt, the
+  // editor lookup).
+  group('an offscreen view', () {
+    for (final offscreen in [false, true]) {
+      testWidgets('offscreen: $offscreen ${offscreen ? 'is not' : 'is'} in the live registry', (t) async {
+        final box = _FakeBox(
+          _doc([
+            _block('paragraph', [_run('x')]),
+          ]),
+          offscreen: offscreen,
+        );
+        await t.pumpWidget(
+          MaterialApp(
+            localizationsDelegates: noteLocalizationsDelegates,
+            home: Scaffold(
+              body: Builder(builder: (context) => const NoteModule().buildView(context, box)),
+            ),
+          ),
+        );
+        await t.pumpAndSettle();
+        expect(noteLiveCount('b'), offscreen ? 0 : 1);
+        await t.pumpWidget(const SizedBox());
+        expect(noteLiveCount('b'), 0);
+      });
+    }
   });
 }
 

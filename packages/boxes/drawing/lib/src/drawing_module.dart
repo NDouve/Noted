@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
@@ -12,6 +13,7 @@ import 'package:noted_core/noted_core.dart';
 
 import 'drawing_codec.dart';
 import 'drawing_commands.dart';
+import 'drawing_export.dart';
 import 'drawing_tools.dart';
 import 'ink_color.dart';
 import 'stroke_render.dart';
@@ -58,6 +60,23 @@ final class DrawingModule extends BoxModule<DrawingData> {
   @override
   Widget buildView(BuildContext context, BoxContext<DrawingData> box) =>
       DrawingView(box: box, scroll: scrollOf(box.boxId));
+
+  @override
+  List<ExportFormat> exportFormats(DrawingData data) => const [ExportFormat.png, ExportFormat.svg];
+
+  /// The box'"'"'s rectangle at scroll offset 0 (the origin applies), in light
+  /// ink and with no background; strokes outside it are clipped.
+  @override
+  Future<ExportedFile?> export(DrawingData data, ExportFormat format, ExportContext context) async {
+    switch (format.id) {
+      case 'png':
+        final png = await drawingToPng(data, context.size, context.pixelRatio);
+        return png == null ? null : ExportedFile('', png);
+      case 'svg':
+        return ExportedFile('', utf8.encode(drawingToSvg(data, context.size)));
+    }
+    return null;
+  }
 }
 
 /// Converts between page and content coordinates for a drawing box.
