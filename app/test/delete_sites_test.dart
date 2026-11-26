@@ -262,8 +262,6 @@ const List<Site> deleteSites = [
 const String _ownTemp =
     'a unique or fixed own temporary file renamed over an app-private file';
 const String _rename = 'not a file operation: a rename of a page or a command';
-const String _move =
-    'a folder or file move onto a free name; the primitives that rename aside are checked';
 
 final List<Site> renameSites = [
   for (final call in [
@@ -275,7 +273,7 @@ final List<Site> renameSites = [
       'packages/noted_core/lib/src/storage/exclusive_move.dart',
       call,
       1,
-      'the Android fallback below API 30, after an lstat that found no target, under the folder locks',
+      "Android after a refused link, without renameat2 or where it can't rename: the rename runs in the same synchronous call as an lstat that found no target, in Noted's only writing isolate",
     ),
   (
     'app/lib/src/ai/ai_link_server.dart',
@@ -328,7 +326,12 @@ final List<Site> renameSites = [
     _rename,
   ),
   ('app/lib/src/recovery_store.dart', 'await tmp.rename(f.path);', 1, _ownTemp),
-  ('app/lib/src/recovery_store.dart', 'await from.rename(to.path);', 1, _move),
+  (
+    'app/lib/src/recovery_store.dart',
+    'await from.rename(to.path);',
+    1,
+    "a desktop volume that can't rename without replacing, after an occupancy check",
+  ),
   (
     'app/lib/src/recovery_store.dart',
     'await f.rename(target.path);',
@@ -441,6 +444,8 @@ const List<Site> writeSites = [
     '$_outsideMark: the sync working folder, app-private on the device and never an iCloud root',
   ),
   ('app/lib/src/icloud_folders.dart', 'await part.writeAsBytes(nonce, flush: true);', 1, '$_tempMark: the probe\'s source, a fresh random name published by publishExclusive'),
+  ('app/lib/src/icloud_folders.dart', 'await s.create(exclusive: true);', 1, '$_tempMark: the staged twin of a version temp, a fresh random name published or removed (checked) by the landing'),
+  ('app/lib/src/icloud_folders.dart', 'await s.writeAsBytes(bytes, flush: true);', 1, '$_tempMark: the staged twin of a version temp, a fresh random name published or removed (checked) by the landing'),
   ('app/lib/src/icloud_folders.dart', 'await file.parent.create(recursive: true);', 1, _appState),
   ('app/lib/src/icloud_folders.dart', 'await tmp.writeAsBytes(bytes, flush: true);', 2, _appTemp),
   ('app/lib/src/icloud_folders.dart', 'await t2.writeAsBytes(fresh, flush: true);', 1, _appTemp),

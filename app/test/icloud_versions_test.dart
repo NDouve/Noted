@@ -16,6 +16,7 @@ import 'package:noted_core/noted_core.dart';
 
 import 'support/fake_cloud_folder_channel.dart';
 import 'support/icloud_world.dart';
+import 'support/scripted_coordinator.dart';
 
 void main() {
   late IcloudWorld w;
@@ -191,7 +192,7 @@ void main() {
   });
 
   group('crash at each landing step, then a reload: every version is a page or a listed copy', () {
-    for (final step in ['copied', 'published', 'verified', 'resolved']) {
+    for (final step in ['copied', 'published', 'verified', 'resolved', 'reread']) {
       test('killed after $step', () async {
         final f = await w.picked();
         final file = w.write('p1.canvas', 'current');
@@ -216,6 +217,266 @@ void main() {
     }
   });
 
+  group('a version equal to the file: crash at each step, then a reload', () {
+    for (final step in ['copied', 'equal', 'resolved', 'reread']) {
+      test('killed after $step', () async {
+        final f = await w.picked();
+        final file = w.write('p1.canvas', 'same');
+        channel.addVersion(file.path, b('same'));
+        f.landingStep = (s, path) async {
+          if (s == step) throw StateError('killed');
+        };
+        await f.landVersions([file.path]);
+        f.dispose();
+        final g = await w.relaunched();
+        await g.landAllVersions();
+        expect(channel.unresolvedOf(file.path), isEmpty);
+        expect(temps(), isEmpty);
+        expect(w.names(), ['p1.canvas'], reason: 'equal to the file: no copy is needed');
+        expect(text('p1.canvas'), 'same');
+      });
+    }
+  });
+
+  group('the temp is kept through the resolve (t3c, area-data-integrity R-1)', () {
+    final good = 'attachment bytes';
+    String attName() => '${contentHash(b(good))}.png';
+    String copy8(String s) => 'p1-icloud-${h8(s)}.canvas';
+    String copy16(String s) => 'p1-icloud-${h16(s)}.canvas';
+
+    test('a copy replaced inside the resolve: the version is resolved, the replacement is kept, its bytes are in the other name', () async {
+      final f = await w.picked();
+      final file = w.write('p1.canvas', 'current');
+      channel.addVersion(file.path, b('theirs'));
+      channel.onResolve = (path, id) => File(w.path(copy8('theirs'))).writeAsStringSync('replacement');
+      await f.landVersions([file.path]);
+      expect(channel.unresolvedOf(file.path), isEmpty);
+      expect(text(copy8('theirs')), 'replacement');
+      expect(text(copy16('theirs')), 'theirs');
+      expect(temps(), isEmpty);
+      expect(text('p1.canvas'), 'current');
+      expect(f.versionIssues, isEmpty);
+    });
+
+    for (final step in ['verified', 'resolved']) {
+      test('the same with the replace at the $step step', () async {
+        final f = await w.picked();
+        final file = w.write('p1.canvas', 'current');
+        channel.addVersion(file.path, b('theirs'));
+        f.landingStep = (s, path) async {
+          if (s == step) File(w.path(copy8('theirs'))).writeAsStringSync('replacement');
+        };
+        await f.landVersions([file.path]);
+        expect(text(copy8('theirs')), 'replacement');
+        expect(text(copy16('theirs')), 'theirs');
+        expect(temps(), isEmpty);
+        // At `verified` the replace comes before the resolve, which then still ran with the temp held.
+        expect(channel.unresolvedOf(file.path), isEmpty);
+      });
+    }
+
+    test('a target replaced inside the resolve, with the version equal to it: the version is a copy', () async {
+      final f = await w.picked();
+      final file = w.write('p1.canvas', 'same');
+      channel.addVersion(file.path, b('same'));
+      channel.onResolve = (path, id) => File(path).writeAsStringSync('replacement');
+      await f.landVersions([file.path]);
+      expect(channel.unresolvedOf(file.path), isEmpty);
+      expect(text('p1.canvas'), 'replacement');
+      expect(text(copy8('same')), 'same');
+      expect(temps(), isEmpty);
+    });
+
+    test('a copy deleted inside the resolve (another device merged it) is published again', () async {
+      final f = await w.picked();
+      final file = w.write('p1.canvas', 'current');
+      channel.addVersion(file.path, b('theirs'));
+      channel.onResolve = (path, id) => File(w.path(copy8('theirs'))).deleteSync();
+      await f.landVersions([file.path]);
+      expect(channel.unresolvedOf(file.path), isEmpty);
+      expect(text(copy8('theirs')), 'theirs');
+      expect(temps(), isEmpty);
+    });
+
+    test('an attachment replaced by damaged bytes inside the resolve (missing and intact): set aside, then published from the temp', () async {
+      final f = await w.picked();
+      for (final missing in [true, false]) {
+        final dir = 'p${missing ? 1 : 2}.assets';
+        final att = w.write('$dir/${attName()}', good);
+        channel.addVersion(att.path, b(good));
+        // The attachment is gone by the time the landing places the version.
+        f.landingStep = (s, path) async {
+          if (missing && s == 'copied' && att.existsSync()) att.deleteSync();
+        };
+        channel.onResolve = (path, id) => File(path).writeAsStringSync('damaged');
+        await f.landVersions([att.path]);
+        expect(channel.unresolvedOf(att.path), isEmpty, reason: 'missing: $missing');
+        expect(text('$dir/${attName()}'), good, reason: 'missing: $missing');
+        final kept = w.names(dir).where((n) => n.contains('.damaged-'));
+        expect(kept, hasLength(1), reason: 'missing: $missing');
+        expect(text('$dir/${kept.single}'), 'damaged');
+        expect(w.names(dir).where((n) => n.contains('noted-version')), isEmpty);
+        channel.onResolve = null;
+      }
+    });
+
+    test('both names taken after the replace: the temp stays and is listed, nothing is deleted; a freed name places it and the row goes', () async {
+      final f = await w.picked();
+      final file = w.write('p1.canvas', 'current');
+      channel.addVersion(file.path, b('theirs'));
+      channel.onResolve = (path, id) {
+        File(w.path(copy8('theirs'))).writeAsStringSync('x');
+        File(w.path(copy16('theirs'))).writeAsStringSync('y');
+      };
+      await f.landVersions([file.path]);
+      expect(channel.unresolvedOf(file.path), isEmpty);
+      expect(temps(), hasLength(1));
+      expect(f.versionIssues.single.text, "iCloud holds versions of p1.canvas that Noted can't keep yet");
+      expect(text(copy8('theirs')), 'x');
+      expect(text(copy16('theirs')), 'y');
+      File(w.path(copy16('theirs'))).deleteSync();
+      await f.scanForVersions();
+      expect(text(copy16('theirs')), 'theirs');
+      expect(temps(), isEmpty);
+      expect(f.versionIssues, isEmpty, reason: 'a placed temp clears its row');
+    });
+
+    test('a temp placed by a folder landing clears the row of its file', () async {
+      final f = await w.picked();
+      w.write('p1.canvas', 'current');
+      w.write(copy8('theirs'), 'x');
+      final blocker = w.write(copy16('theirs'), 'y');
+      w.write('.p1.canvas.noted-version-0123456789abcdef.tmp', 'theirs');
+      await f.landVersions([w.drive.path]);
+      expect(f.versionIssues, hasLength(1));
+      blocker.deleteSync();
+      await f.landVersions([w.drive.path]);
+      expect(text(copy16('theirs')), 'theirs');
+      expect(temps(), isEmpty);
+      expect(f.versionIssues, isEmpty);
+    });
+
+    test('a re-publish that is refused leaves the temp, and the next scan publishes it', () async {
+      final f = await w.picked();
+      final file = w.write('p1.canvas', 'current');
+      channel.addVersion(file.path, b('theirs'));
+      final c = ScriptedCoordinator();
+      unregisterCoordinator(w.drive.path); // the folder access's own
+      registerScripted(w.drive, c);
+      var armed = false;
+      c.refuse = (write) => armed && write.intents.any((i) => i.kind == CoordinationKind.move && i.path.contains('noted-version-'));
+      channel.onResolve = (path, id) {
+        File(w.path(copy8('theirs'))).writeAsStringSync('replacement');
+        armed = true;
+      };
+      await f.landVersions([file.path]);
+      expect(channel.unresolvedOf(file.path), isEmpty);
+      expect(temps(), hasLength(1), reason: 'refused: the temp stays');
+      expect(w.names().where((n) => n.contains('-icloud-')), [copy8('theirs')]);
+      armed = false;
+      await f.scanForVersions();
+      expect(text(copy16('theirs')), 'theirs');
+      expect(temps(), isEmpty);
+    });
+
+    test('a resolve that fails or answers false removes the temp only after the copy reads equal', () async {
+      final f = await w.picked();
+      final file = w.write('p1.canvas', 'current');
+      channel.addVersion(file.path, b('theirs'));
+      // The copy is replaced before the resolve that throws.
+      channel.resolveFails = true;
+      f.landingStep = (s, path) async {
+        if (s == 'verified') File(w.path(copy8('theirs'))).writeAsStringSync('replacement');
+      };
+      await f.landVersions([file.path]);
+      expect(channel.unresolvedOf(file.path), hasLength(1));
+      expect(text(copy16('theirs')), 'theirs', reason: 'placed, not dropped');
+      expect(temps(), isEmpty);
+      // The same with an answer of false (resolved elsewhere meanwhile).
+      final other = w.write('p2.canvas', 'current 2');
+      channel.addVersion(other.path, b('t2'));
+      channel.onVersions = (path, tmps) {
+        for (final v in channel.versionsOf(path)) {
+          v.resolved = true;
+        }
+      };
+      f.landingStep = (s, path) async {
+        if (s == 'verified') File(w.path('p2-icloud-${h8('t2')}.canvas')).writeAsStringSync('replacement');
+      };
+      await f.landVersions([other.path]);
+      expect(text('p2-icloud-${h16('t2')}.canvas'), 't2');
+      expect(temps(), isEmpty);
+    });
+
+    test('a resolve that took effect and then threw, with the copy replaced: the bytes are in the other copy name', () async {
+      final f = await w.picked();
+      final file = w.write('p1.canvas', 'current');
+      channel.addVersion(file.path, b('theirs'));
+      channel.resolveThenThrows = true;
+      channel.onResolve = (path, id) => File(w.path(copy8('theirs'))).writeAsStringSync('replacement');
+      await f.landVersions([file.path]);
+      expect(channel.unresolvedOf(file.path), isEmpty);
+      expect(text(copy16('theirs')), 'theirs');
+      expect(temps(), isEmpty);
+    });
+
+    test('both names taken before the resolve: the temps are removed, nothing is resolved, the row is listed', () async {
+      final f = await w.picked();
+      final file = w.write('p1.canvas', 'current');
+      w.write(copy8('theirs'), 'x');
+      w.write(copy16('theirs'), 'y');
+      channel.addVersion(file.path, b('theirs'));
+      await f.landVersions([file.path]);
+      expect(channel.callsOf('resolveVersion'), isEmpty);
+      expect(channel.unresolvedOf(file.path), hasLength(1));
+      expect(temps(), isEmpty);
+      expect(f.versionsStuck(file.path), isTrue);
+    });
+
+    test('a two-version attachment replaced inside the resolve: the temp stays and the file is listed until the other version is resolved', () async {
+      final f = await w.picked();
+      final att = w.write('p1.assets/${attName()}', good);
+      channel.addVersion(att.path, b(good));
+      channel.addVersion(att.path, b('some other bytes'));
+      channel.onResolve = (path, id) => File(path).writeAsStringSync('damaged');
+      for (var i = 0; i < 3; i++) {
+        await f.landVersions([att.path]);
+        channel.onResolve = null;
+      }
+      expect(w.names('p1.assets').where((n) => n.contains('noted-version')), hasLength(1), reason: 'the temp stays');
+      expect(text('p1.assets/${attName()}'), 'damaged', reason: 'nothing was moved');
+      expect(f.versionsStuck(att.path), isTrue);
+      // The other version is resolved remotely: the next landing places the temp.
+      channel.versionsOf(att.path)[1].resolved = true;
+      await f.landVersions([att.path]);
+      expect(text('p1.assets/${attName()}'), good);
+      expect(w.names('p1.assets').where((n) => n.contains('noted-version')), isEmpty);
+      expect(w.names('p1.assets').where((n) => n.contains('.damaged-')), hasLength(1));
+      expect(f.versionIssues, isEmpty);
+    });
+
+    test('killed after resolved with the copy replaced, then a reload: the bytes are in a copy and no temp is left', () async {
+      final f = await w.picked();
+      final file = w.write('p1.canvas', 'current');
+      channel.addVersion(file.path, b('theirs'));
+      f.landingStep = (s, path) async {
+        if (s == 'resolved') {
+          File(w.path(copy8('theirs'))).writeAsStringSync('replacement');
+          throw StateError('killed');
+        }
+      };
+      await f.landVersions([file.path]);
+      expect(channel.unresolvedOf(file.path), isEmpty);
+      expect(temps(), hasLength(1), reason: 'the temp is how this crash is found');
+      f.dispose();
+      final g = await w.relaunched();
+      await g.landAllVersions();
+      expect(text(copy16('theirs')), 'theirs');
+      expect(text(copy8('theirs')), 'replacement');
+      expect(temps(), isEmpty);
+    });
+  });
+
   group('a leftover\'s versions (B2)', () {
     test('the copy is named after the leftover\'s target, and the folder is swept again only after one resolved', () async {
       final f = await w.picked();
@@ -227,7 +488,7 @@ void main() {
       // The sweep names the leftover as a move and is told `pending`.
       expect(await sweepAsideFiles(w.drive), isEmpty);
       expect(left.existsSync(), isTrue, reason: 'nothing consumed');
-      await waitFor(() => channel.unresolvedOf(left.path).isEmpty, what: 'the landing');
+      await waitFor(() => channel.unresolvedOf(left.path).isEmpty && temps().isEmpty, what: 'the landing');
       expect(text('p1-icloud-${h8('theirs')}.canvas'), 'theirs');
       expect(landed.single.leftover, isTrue);
       expect(landed.single.resolved, 1);
@@ -432,7 +693,7 @@ void main() {
       );
       expect(Directory(from).existsSync(), isTrue);
       expect(Directory(to).existsSync(), isFalse);
-      await waitFor(() => channel.unresolvedOf(att.path).isEmpty, what: 'the landing');
+      await waitFor(() => channel.unresolvedOf(att.path).isEmpty && !w.names('p1.assets').any((n) => n.contains('noted-version-')), what: 'the landing');
       expect(await moveExclusive(from, to, alsoMoved: [att.path]), MoveOutcome.moved);
       expect(File('$to/$name').readAsStringSync(), good);
       expect(f.versionIssues, isEmpty);
@@ -471,7 +732,7 @@ void main() {
       expect(file.existsSync(), isTrue);
     });
 
-    test('each change event and each launch try the landing again; a freed name lands it and clears the row', () async {
+    test('the event of a freed name and each launch try the landing again; a freed name lands it and clears the row', () async {
       final f = await w.picked();
       final file = w.write('p1.canvas', 'current');
       w.write('p1-icloud-${h8('theirs')}.canvas', 'x');
@@ -481,7 +742,8 @@ void main() {
       expect(f.versionIssues, hasLength(1));
       final tries = channel.callsOf('versions').length;
       blocker.deleteSync();
-      await channel.emit('changed', {'path': file.path});
+      // The row's own events are no trigger (t2b); the event of the name that was gone is.
+      await channel.emit('changed', {'path': blocker.path});
       await waitFor(() => f.versionIssues.isEmpty, what: 'the row to go');
       expect(channel.callsOf('versions').length, greaterThan(tries));
       expect(text('p1-icloud-${h16('theirs')}.canvas'), 'theirs');

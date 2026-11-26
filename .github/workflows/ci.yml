@@ -1,8 +1,9 @@
 # Continuous integration: static checks and tests on every push and pull
 # request, plus release builds of the Windows and macOS apps.
 #
-# Not run here: app/integration_test. It drives the real app and needs an
-# interactive desktop session, so it stays a local check.
+# Not run here: app/integration_test, except integration_test/android, which
+# the android-emulator job below runs on an emulator. The rest drive the real
+# app and need an interactive desktop session, so they stay a local check.
 name: CI
 
 on:
@@ -398,4 +399,91 @@ jobs:
           name: Noted-android-apk
           path: app/build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
+          retention-days: 14
+  android-emulator:
+    name: Android emulator (API ${{ matrix.api }})
+    # Android's SELinux policy is expected to refuse `link` to apps, so the app
+    # publishes files by rename there (run 2026-11-25-01). This job runs the
+    # real app on emulators: first launch on empty storage, a save that is
+    # still there after a stop, and one engine per process. Pushes to main and
+    # manual runs only, not PRs, like android-build.
+    #
+    # The 26 leg (Android 8) may not boot on a hosted runner (no image, or no
+    # boot in 15 minutes). If so, give that leg continue-on-error: true and say
+    # why in the run report; 30 and 34 stay blocking.
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        api: [34, 30, 26]
+    env:
+      GH_TOKEN: ${{ github.token }}
+      OUT_DIR: android-emulator-out
+      DEBUG_APK: app/build/app/outputs/apk/debug/app-debug.apk
+      TEST_APK: app/build/app/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Get dependencies (workspace root)
+        run: flutter pub get
+
+      # The emulator needs /dev/kvm to be usable by the runner user.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # Built once, before the emulator starts: the debug apk with the
+      # integration test as its Dart entry, and the instrumentation apk
+      # (MainActivityTest, which runs it by `am instrument`). `flutter test -d`
+      # would uninstall the app when it finishes and wipe the saved page.
+      # The first build also writes the Gradle setup.
+      - name: Build the apks
+        working-directory: app
+        run: |
+          flutter build apk --debug
+          cd android
+          ./gradlew app:assembleAndroidTest
+          ./gradlew app:assembleDebug -Ptarget=integration_test/android/first_launch_save_test.dart
+
+      # reactivecircus/android-emulator-runner v2.38.0 (Apache-2.0), pinned to
+      # the commit of that tag. Its script is one line: the steps are in
+      # .github/scripts/android_emulator_job.sh, which prints NOTED_ lines.
+      - name: Run on the emulator
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        env:
+          API_LEVEL: ${{ matrix.api }}
+        with:
+          api-level: ${{ matrix.api }}
+          # `default` for every leg; if API 26 has no such x86_64 image, use
+          # `google_apis` for that leg.
+          target: default
+          arch: x86_64
+          emulator-options: -no-window -no-snapshot -gpu swiftshader_indirect -noaudio -no-boot-anim
+          disable-animations: true
+          script: bash .github/scripts/android_emulator_job.sh
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-emulator-api${{ matrix.api }}
+          path: android-emulator-out
+          if-no-files-found: ignore
           retention-days: 14

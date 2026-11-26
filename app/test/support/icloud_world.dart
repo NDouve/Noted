@@ -5,6 +5,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter_test/flutter_test.dart' show expect, isEmpty;
 import 'package:noted/main.dart' show buildModules;
 import 'package:noted/src/app_settings.dart';
 import 'package:noted/src/icloud_folders.dart';
@@ -24,6 +25,15 @@ class IcloudWorld {
   late File access;
   late FakeCloudFolderChannel channel;
   late FolderLocks locks;
+
+  /// The clock the folder accesses use; null is the real one.
+  FakeClock? clock;
+
+  /// How long a folder access gathers change events before it asks the platform.
+  Duration askDelay = const Duration(milliseconds: 20);
+
+  /// The least time between two scans for versions (the backstop).
+  Duration scanAfter = const Duration(minutes: 1);
   final List<IcloudFolders> folders = [];
   final List<Notebook> notebooks = [];
 
@@ -32,7 +42,7 @@ class IcloudWorld {
     final made = Directory('${root.path}/Drive')..createSync(recursive: true);
     drive = Directory(made.resolveSymbolicLinksSync());
     access = File('${root.path}/state/folder-access.json');
-    channel = FakeCloudFolderChannel();
+    channel = FakeCloudFolderChannel()..tempHeldAtResolve = true;
     channel.ubiquitous.add(drive.path);
     locks = FolderLocks();
   }
@@ -45,6 +55,9 @@ class IcloudWorld {
       locks: locks,
       coordinationTimeout: const Duration(seconds: 5),
       versionRetryAfter: retryAfter,
+      versionAskDelay: askDelay,
+      tempScanAfter: scanAfter,
+      now: clock?.call,
     );
     folders.add(f);
     return f;
@@ -134,6 +147,8 @@ class IcloudWorld {
       f.dispose();
     }
     await deleteTestFolder(root);
+    // t3c: no version was resolved without its temp holding the bytes.
+    expect(channel.resolveViolations, isEmpty);
   }
 }
 
@@ -144,4 +159,13 @@ Future<void> waitFor(bool Function() done, {String? what, Duration within = cons
     if (DateTime.now().isAfter(end)) throw StateError('timed out waiting for ${what ?? 'a condition'}');
     await Future<void>.delayed(const Duration(milliseconds: 10));
   }
+}
+
+/// A clock a test moves by hand.
+class FakeClock {
+  DateTime now = DateTime.utc(2026, 11, 25, 12);
+
+  DateTime call() => now;
+
+  void advance(Duration d) => now = now.add(d);
 }

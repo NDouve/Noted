@@ -4,7 +4,9 @@
 
 package io.github.ndouve.noted
 
+import android.app.ActivityManager
 import android.net.Uri
+import android.os.Bundle
 import android.provider.OpenableColumns
 import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
@@ -17,7 +19,32 @@ class MainActivity : FlutterActivity() {
     private val reader = Executors.newSingleThreadExecutor()
     private var documentRender: DocumentRender? = null
 
+    @Suppress("DEPRECATION") // RecentTaskInfo.id is the one API 26 to 28 have
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        // One engine per process. Noted publishes files without hard links on
+        // Android, which is safe only while one isolate writes: a second
+        // MainActivity (the launcher's icon, `singleTop` or not, can start one)
+        // would start a second engine on the same files. It is finished here,
+        // before FlutterActivity's onStart runs the Dart entrypoint, and the
+        // first one's task is brought forward. `super.onCreate` runs first, as
+        // FlutterActivity needs it.
+        val first = live
+        // A first activity that is already finishing (Back, then the launcher
+        // icon) is going away: this one starts and owns the engine.
+        if (first != null && first !== this && !first.isFinishing) {
+            val manager = getSystemService(ActivityManager::class.java)
+            manager?.appTasks
+                ?.firstOrNull { it.taskInfo?.id == first.taskId }
+                ?.moveToFront()
+            finish()
+            return
+        }
+        live = this
+    }
+
     override fun onDestroy() {
+        if (live === this) live = null
         documentRender?.detach()
         documentRender = null
         reader.shutdown()
@@ -89,6 +116,9 @@ class MainActivity : FlutterActivity() {
     }
 
     companion object {
+        /** The activity that owns the engine, until it is destroyed. */
+        private var live: MainActivity? = null
+
         private const val MAX_BYTES = 50 * 1024 * 1024
     }
 }

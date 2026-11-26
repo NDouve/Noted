@@ -18,6 +18,7 @@ import 'package:noted/src/save_trouble.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'support/icloud_world.dart';
+import 'support/scripted_coordinator.dart';
 
 void main() {
   late IcloudWorld w;
@@ -188,6 +189,193 @@ void main() {
       await waitFor(() => nb.unreadable.isEmpty, what: 'the rows of the merged copies to go');
       expect(nb.unreadable, isEmpty);
       expect(readPage(file.readAsStringSync()).node(box.id), isNotNull, reason: 'the copy\'s box is on the page');
+    });
+
+    test('a copy whose merge was refused for a passing reason (busy) is merged when its original is looked at again, with no relaunch', () async {
+      final f = await w.picked(platform: CloudPlatform.ios);
+      await externalPage('gone1');
+      final nb = w.notebook(f);
+      await nb.load();
+      final file = File(w.path('gone1.canvas'));
+      final box = BoxRecord.create(
+        id: '00000000000000c2',
+        typeId: 'x.unregistered',
+        dataVersion: 1,
+        bounds: const Bounds(300, 300, 10, 10),
+        data: const RawJson.trusted('{"k":1}'),
+        snapshotText: 'from the copy',
+        rev: 'r',
+      );
+      final copy = File(w.path('gone1-icloud-4d5e6f70.canvas'))..writeAsStringSync(writePage(readPage(file.readAsStringSync()).insertNode(box)));
+      // The original is evicted while the merge reads it: the merge is refused as busy (dataless).
+      final original = file.readAsStringSync();
+      var evicted = false;
+      storedReadObserver = (p) {
+        if (evicted || !p.endsWith('gone1.canvas')) return;
+        evicted = true;
+        file.deleteSync();
+        File(w.path('.gone1.canvas.icloud')).writeAsStringSync('');
+      };
+      addTearDown(() => storedReadObserver = null);
+      await w.channel.emit('changed', {'path': copy.path});
+      await waitFor(() => nb.unreadable.any((u) => u.reason.startsWith('Could not be merged into its page')), what: 'the refused merge');
+      storedReadObserver = null;
+      expect(evicted, isTrue, reason: 'the seam fired');
+      final row = nb.unreadable.where((u) => u.reason.startsWith('Could not be merged into its page')).toList();
+      expect(row, hasLength(1));
+      expect(row.single.reason, contains('The folder is busy'));
+      expect(copy.existsSync(), isTrue);
+      // The original materialises: the copy merges without a relaunch.
+      File(w.path('.gone1.canvas.icloud')).deleteSync();
+      file.writeAsStringSync(original);
+      await w.channel.emit('changed', {'path': file.path});
+      await waitFor(() => !copy.existsSync(), what: 'the copy to merge');
+      await waitFor(() => nb.unreadable.isEmpty, what: 'the row to go');
+      expect(readPage(file.readAsStringSync()).node(box.id), isNotNull);
+    });
+
+    // Four more cases of the retry of a refused conflict-copy merge (t2b review).
+    BoxRecord box2(String id, String s) => BoxRecord.create(
+      id: id,
+      typeId: 'x.unregistered',
+      dataVersion: 1,
+      bounds: const Bounds(300, 300, 10, 10),
+      data: const RawJson.trusted('{"k":1}'),
+      snapshotText: s,
+      rev: 'r',
+    );
+
+    Future<({Notebook nb, File file, File copy, String original})> withCopy(IcloudFolders f, {bool open = false}) async {
+      await externalPage('gone1');
+      final file = File(w.path('gone1.canvas'));
+      file.writeAsStringSync(writePage(readPage(file.readAsStringSync()).insertNode(box2('00000000000000a1', 'the original\'s own'))));
+      await externalPage('other', order: 9);
+      final nb = w.notebook(f);
+      await nb.load();
+      await nb.open(open ? 'gone1' : 'other'); // closed: the merge is the closed branch
+      final original = file.readAsStringSync();
+      final copy = File(w.path('gone1-icloud-4d5e6f70.canvas'))
+        ..writeAsStringSync(writePage(readPage(original).insertNode(box2('00000000000000c3', 'from the copy'))));
+      return (nb: nb, file: file, copy: copy, original: original);
+    }
+
+    test('a merge that would drop a node of the original writes nothing, stays listed, and a folder check does not retry or clear it', () async {
+      final f = await w.picked(platform: CloudPlatform.ios);
+      final s = await withCopy(f);
+      var merges = 0;
+      s.nb.conflictMergeHook = (merged) {
+        merges++;
+        return merged.removeNode('00000000000000a1');
+      };
+      await w.channel.emit('changed', {'path': s.copy.path});
+      await waitFor(() => s.nb.unreadable.any((u) => u.reason.startsWith('Could not be merged into its page')), what: 'the refused merge');
+      expect(s.file.readAsStringSync(), s.original, reason: 'the original was never replaced by a page that lost a node');
+      expect(s.copy.existsSync(), isTrue);
+      expect(s.nb.unreadable.single.reason, contains('is missing'));
+      expect(merges, 1);
+      await s.nb.checkFolders();
+      await s.nb.checkFolders();
+      expect(merges, 1, reason: 'a permanent failure is not retried');
+      expect(s.nb.unreadable.single.reason, contains('Could not be merged'));
+      expect(s.file.readAsStringSync(), s.original);
+      expect(s.copy.existsSync(), isTrue);
+    });
+
+    test('on the open page a merge that would drop a node is not applied or saved, stays listed, and a folder check does not retry or clear it', () async {
+      final f = await w.picked(platform: CloudPlatform.ios);
+      final s = await withCopy(f, open: true);
+      expect(s.nb.currentId, 'gone1');
+      var merges = 0;
+      s.nb.conflictMergeHook = (merged) {
+        merges++;
+        return merged.removeNode('00000000000000a1');
+      };
+      await w.channel.emit('changed', {'path': s.copy.path});
+      await waitFor(() => s.nb.unreadable.any((u) => u.reason.startsWith('Could not be merged into its page')), what: 'the refused merge');
+      await s.nb.flush();
+      expect(s.nb.current!.page.node('00000000000000a1'), isNotNull, reason: 'the node stays on the screen');
+      expect(s.file.readAsStringSync(), s.original, reason: 'and in the file');
+      expect(s.copy.existsSync(), isTrue);
+      await s.nb.checkFolders();
+      await s.nb.checkFolders();
+      expect(merges, 1, reason: 'a permanent failure is not retried');
+      expect(s.nb.unreadable.single.reason, contains('is missing'));
+      expect(s.nb.current!.page.node('00000000000000a1'), isNotNull);
+      expect(s.file.readAsStringSync(), s.original);
+      expect(s.copy.existsSync(), isTrue);
+    });
+
+    test('the original never sends an event: the folder check merges a copy refused as busy', () async {
+      final f = await w.picked(platform: CloudPlatform.ios);
+      final s = await withCopy(f);
+      final c = ScriptedCoordinator();
+      unregisterCoordinator(w.drive.path);
+      registerScripted(w.drive, c);
+      c.refuse = (write) => true;
+      await w.channel.emit('changed', {'path': s.copy.path});
+      await waitFor(() => s.nb.unreadable.any((u) => u.reason.startsWith('Could not be merged into its page')), what: 'the refused merge');
+      expect(s.copy.existsSync(), isTrue);
+      c.refuse = null;
+      await s.nb.checkFolders(); // no event for the original or the copy
+      expect(s.copy.existsSync(), isFalse);
+      expect(s.nb.unreadable, isEmpty);
+      expect(readPage(s.file.readAsStringSync()).node('00000000000000c3'), isNotNull);
+    });
+
+    test('a sharing violation (an OS busy code) from the merge is retried at the folder check', () async {
+      final f = await w.picked(platform: CloudPlatform.ios);
+      final s = await withCopy(f);
+      final code = Platform.isWindows ? 32 : (Platform.isMacOS ? 35 : 11);
+      var armed = true;
+      s.nb.syncHook = (point, path) async {
+        if (armed && point == 'copy-merged') throw FileSystemException('Cannot delete', path, OSError('in a language not English', code));
+      };
+      await w.channel.emit('changed', {'path': s.copy.path});
+      await waitFor(() => s.nb.unreadable.any((u) => u.reason.startsWith('Could not be merged into its page')), what: 'the refused merge');
+      expect(s.nb.unreadable.single.reason, isNot(contains('being used by another process')), reason: 'the words are not what is looked at');
+      armed = false;
+      await s.nb.checkFolders();
+      expect(s.copy.existsSync(), isFalse);
+      expect(s.nb.unreadable, isEmpty);
+    });
+
+    test('a merge that kept hitting a changing original is retried at the folder check', () async {
+      final f = await w.picked(platform: CloudPlatform.ios);
+      final s = await withCopy(f);
+      var changing = true;
+      var n = 0;
+      s.nb.syncHook = (point, path) async {
+        if (changing && point == 'original-read') {
+          s.file.writeAsStringSync(writePage(readPage(s.file.readAsStringSync()).insertNode(box2('00000000000001${(n++).toString().padLeft(2, '0')}', 'edit $n'))));
+        }
+      };
+      await w.channel.emit('changed', {'path': s.copy.path});
+      await waitFor(() => s.nb.unreadable.any((u) => u.reason.contains('keep changing')), what: 'the merge to give up');
+      changing = false;
+      await s.nb.checkFolders();
+      expect(s.copy.existsSync(), isFalse);
+      expect(s.nb.unreadable, isEmpty);
+      expect(readPage(s.file.readAsStringSync()).node('00000000000000c3'), isNotNull);
+    });
+
+    test('a delete of the merged copy that is refused as busy keeps one recovery entry however often it is retried', () async {
+      final f = await w.picked(platform: CloudPlatform.ios);
+      final s = await withCopy(f);
+      final c = ScriptedCoordinator();
+      unregisterCoordinator(w.drive.path);
+      registerScripted(w.drive, c);
+      c.refuse = (write) => write.intents.any((i) => i.kind == CoordinationKind.delete && i.path.contains('-icloud-'));
+      await w.channel.emit('changed', {'path': s.copy.path});
+      await waitFor(() => s.nb.unreadable.any((u) => u.reason.startsWith('Could not be merged into its page')), what: 'the refused delete');
+      int entries() => Directory('${w.root.path}/app/recovery').existsSync() ? Directory('${w.root.path}/app/recovery').listSync().where((e) => e.path.endsWith('.entry')).length : 0;
+      final first = entries();
+      expect(first, 1);
+      await s.nb.checkFolders();
+      await s.nb.checkFolders();
+      expect(entries(), first, reason: 'the entry of the same copy and text is reused');
+      c.refuse = null;
+      await s.nb.checkFolders();
+      expect(s.copy.existsSync(), isFalse);
     });
 
     test('a copy of a copy beside a stub-only page waits too, and both copies\' edits land when the page arrives', () async {

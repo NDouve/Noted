@@ -67,6 +67,7 @@ const Map<String, _Allowed> _allowed = {
 
   // A temp this same call wrote.
   'app/lib/src/icloud_folders.dart::IcloudFolders._landLocked::readAsBytes': (count: 1, reason: _ownTemp),
+  'app/lib/src/icloud_folders.dart::IcloudFolders._stage::readAsBytes': (count: 1, reason: _ownTemp),
   'app/lib/src/icloud_folders.dart::IcloudFolders._landPageVersion::readAsBytes': (count: 1, reason: _ownTemp),
   'app/lib/src/icloud_folders.dart::IcloudFolders._landAttachmentVersion::readAsBytes': (count: 1, reason: _ownTemp),
   'app/lib/src/notebook.dart::Notebook.putBackBinderCopy::readAsBytes': (count: 1, reason: _ownTemp),

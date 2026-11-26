@@ -8,7 +8,14 @@ import 'dart:typed_data';
 
 import 'coordination.dart';
 import 'dataless.dart';
-import 'exclusive_publish.dart' show checkWindowsName, windowsPath;
+import 'exclusive_publish.dart'
+    show
+        checkWindowsName,
+        debugLinkCalls,
+        debugLinkErrno,
+        debugPublishAsAndroid,
+        nonLinkPublisher,
+        windowsPath;
 import 'file_stamp.dart';
 
 /// What [moveExclusive] did.
@@ -49,6 +56,11 @@ enum MoveStrategy {
 /// Not exported by `noted_core.dart`; tests import this file. (No
 /// `@visibleForTesting`: `package:meta` is not a dependency of this package.)
 MoveStrategy? debugMoveStrategy;
+
+/// A test seam: makes the no-replace rename call
+/// (every strategy but [MoveStrategy.lstatRename]) fail with this errno
+/// without calling. Null in production. Not exported by `noted_core.dart`.
+int? debugNoReplaceErrno;
 
 /// Moves the file or folder [from] to [to] only if nothing is at [to] at the
 /// moment of moving: it never replaces and never deletes. Both must be on one
@@ -113,7 +125,17 @@ MoveOutcome moveExclusiveUncoordinated(
   String from,
   String to, {
   void Function()? beforeOsCall,
-}) {
+}) => _moveExclusiveCode(from, to, beforeOsCall).$1;
+
+/// [moveExclusiveUncoordinated] with the OS error code that decided the
+/// outcome (0 for [MoveOutcome.moved]; the code of the failed call otherwise,
+/// -1 when it couldn't be read). [force] overrides [debugMoveStrategy].
+(MoveOutcome, int) _moveExclusiveCode(
+  String from,
+  String to,
+  void Function()? hook, [
+  MoveStrategy? force,
+]) {
   // A file that is not downloaded, or a stub with no file, stays where it is:
   // never "missing".
   _requireDownloaded(from);
@@ -121,18 +143,18 @@ MoveOutcome moveExclusiveUncoordinated(
     throw FileSystemException('The source is missing', from);
   }
   if (Platform.isWindows) checkWindowsName(to);
-  if (_taken(to)) return MoveOutcome.targetExists;
+  if (_taken(to)) return (MoveOutcome.targetExists, _eexist);
   final int code;
   try {
-    code = _callOs(from, to, beforeOsCall);
+    code = _callOs(from, to, hook, force ?? debugMoveStrategy);
   } on FileSystemException {
     rethrow;
   } catch (e) {
     // FFI unavailable or a symbol is missing: fail safe, never replace.
     throw FileSystemException('Exclusive move failed: $e', to);
   }
-  if (code == 0) return MoveOutcome.moved;
-  if (_taken(to)) return MoveOutcome.targetExists;
+  if (code == 0) return (MoveOutcome.moved, 0);
+  if (_taken(to)) return (MoveOutcome.targetExists, code);
   if (_isAbsent(from)) {
     _requireDownloaded(from);
     throw FileSystemException('The source is missing', from);
@@ -140,8 +162,8 @@ MoveOutcome moveExclusiveUncoordinated(
   if (_isNotFound(code)) {
     throw FileSystemException('The target folder is missing', to);
   }
-  if (code == _unknownError) return _outcomeWithoutCode(from, to);
-  return moveOutcomeForErrorCode(code);
+  if (code == _unknownError) return (_outcomeWithoutCode(from, to), code);
+  return (moveOutcomeForErrorCode(code), code);
 }
 
 /// The call failed and the error code couldn't be read (it was 0: the runtime
@@ -203,9 +225,18 @@ MoveOutcome moveOutcomeForErrorCode(int code, {bool? windows}) {
 }
 
 /// Makes the call; returns 0 for success, else the OS error code.
-int _callOs(String from, String to, void Function()? hook) {
-  final forced = debugMoveStrategy;
+int _callOs(
+  String from,
+  String to,
+  void Function()? hook,
+  MoveStrategy? forced,
+) {
   if (forced == MoveStrategy.lstatRename) return _lstatRename(from, to, hook);
+  final fake = debugNoReplaceErrno;
+  if (fake != null) {
+    hook?.call();
+    return fake;
+  }
   if (Platform.isWindows) {
     return _moveWindows(windowsPath(from), windowsPath(to), hook);
   }
@@ -370,6 +401,113 @@ int _lstatRename(String from, String to, void Function()? hook) {
   } on FileSystemException catch (e) {
     final code = e.osError?.errorCode ?? 0;
     return code == 0 ? _unknownError : code;
+  }
+}
+
+// --- Android's publish (no hard link) ----------------------------------------
+
+/// Registers [publishByRename] as the publisher of `publishExclusive` when
+/// this is Android (or [debugPublishAsAndroid] says so). Called once at start,
+/// before any storage is read or written. Elsewhere it does nothing.
+void useRenamePublishOnAndroid() {
+  if (debugPublishAsAndroid ?? Platform.isAndroid) {
+    nonLinkPublisher = publishByRename;
+  }
+}
+
+typedef _LinkC = Int32 Function(Pointer<Uint8>, Pointer<Uint8>);
+typedef _LinkD = int Function(Pointer<Uint8>, Pointer<Uint8>);
+typedef _UnlinkC = Int32 Function(Pointer<Uint8>);
+typedef _UnlinkD = int Function(Pointer<Uint8>);
+
+const int _eperm = 1;
+const int _eacces = 13;
+const int _eexistErrno = 17;
+
+/// Android's `publishExclusive`: moves the finished file [from] to [to] only
+/// if nothing is there, without replacing anything. True when published
+/// ([from] is then gone); false when something is at [to]; a
+/// [FileSystemException] otherwise. In order:
+///
+/// 1. `link(from, to)`, then `unlink(from)` (tried twice). [hook] runs once,
+///    immediately before this call. EEXIST, or a target that is present, is
+///    false. EACCES and EPERM (SELinux refuses the call) go to 2. Any other
+///    errno is a [FileSystemException].
+/// 2. `renameat2(RENAME_NOREPLACE)` where bionic exports it (API 30): the
+///    kernel decides atomically. A refusal that is not EEXIST (ENOSYS, EINVAL)
+///    goes to 3; a busy file is a [FileSystemException].
+/// 3. An lstat, then `rename(2)`, in this same synchronous call: no other Dart
+///    code in the isolate runs between them, and Noted is the only writer in
+///    its private storage (a second process is refused by the recovery lock, a
+///    second engine by the activity guard). A target of any kind, a stub or a
+///    dangling link counts as taken, so it never replaces. [hook] is not run a
+///    second time.
+///
+/// The message names the outcome and the OS error code. Registered through
+/// [useRenamePublishOnAndroid]; not exported by `noted_core.dart`.
+bool publishByRename(String from, String to, void Function()? hook) {
+  final linked = _linkOnce(from, to, hook);
+  if (linked == 0) return true;
+  if (linked == _eexistErrno || _taken(to)) return false;
+  if (linked != _eacces && linked != _eperm) {
+    throw FileSystemException(
+      'Exclusive publish failed: link (errno $linked)',
+      to,
+    );
+  }
+  var (outcome, code) = _moveExclusiveCode(from, to, null);
+  if (outcome == MoveOutcome.cannotRename &&
+      debugMoveStrategy != MoveStrategy.lstatRename) {
+    (outcome, code) = _moveExclusiveCode(
+      from,
+      to,
+      null,
+      MoveStrategy.lstatRename,
+    );
+  }
+  switch (outcome) {
+    case MoveOutcome.moved:
+      return true;
+    case MoveOutcome.targetExists:
+      return false;
+    case MoveOutcome.busy:
+    case MoveOutcome.cannotRename:
+      throw FileSystemException(
+        'Exclusive publish failed: ${outcome.name} (errno $code)',
+        to,
+      );
+  }
+}
+
+/// One `link` attempt: 0 when it linked (and [from] is unlinked), else the
+/// errno ([_unknownError] when it couldn't be read).
+int _linkOnce(String from, String to, void Function()? hook) {
+  final forced = debugLinkErrno;
+  if (forced != null) {
+    hook?.call();
+    debugLinkCalls++;
+    return forced;
+  }
+  final libc = DynamicLibrary.process();
+  final link = libc.lookupFunction<_LinkC, _LinkD>('link');
+  final unlink = libc.lookupFunction<_UnlinkC, _UnlinkD>('unlink');
+  final errno = _errnoReader(libc);
+  final a = allocCString(from);
+  final b = allocCString(to);
+  try {
+    hook?.call();
+    debugLinkCalls++;
+    if (link(a, b) == 0) {
+      // The target has the full content; drop the temp name (twice if it
+      // fails, as `publishExclusive` does).
+      if (unlink(a) != 0) unlink(a);
+      return 0;
+    }
+    final e = errno().value;
+    return e == 0 ? _unknownError : e;
+  } finally {
+    freeNative(a);
+    freeNative(b);
   }
 }
 

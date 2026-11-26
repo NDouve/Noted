@@ -246,6 +246,18 @@
 // 37. `_landKeptAssetsNow` without its busy skip (R5): the unit test in
 //     `move_review_leftovers_test.dart` fails.
 //
+// Rows 38 and 39 are for Android's publish (run 2026-11-25-01, task 1): the
+// seeds 1-8 and the mobile smoke seed 914 of "android publish" (9 tests):
+//
+// 38. No occupied-target check on the Android publish path (the `_taken` calls
+//     in `publishByRename`, in `_moveExclusiveCode` and in `_lstatRename` all
+//     removed): 7 of the 9 fail (all but seeds 1 and 2), where a
+//     `conflict:stealPublish` or another steal takes the target at the
+//     publish and the rename then replaces it. Removing only the one in
+//     `_lstatRename` fails none of them: the other two see the target first.
+// 39. No publisher registered (`useRenamePublishOnAndroid` registers nothing):
+//     all 9 fail at `start`, where the first page can't be published.
+//
 // Wait for watchers: none is used. The notebook runs with `watchFiles` off,
 // and the steps call `checkFile` and `checkFolders` themselves, the way the
 // watcher would, so a step is over when its calls return. Folder renames and
@@ -279,6 +291,7 @@ import 'package:noted_sync/noted_sync.dart' show DavIdKind, PullEngine, RoundRes
 
 import '../../packages/noted_sync/test/fake_webdav.dart';
 import '../../packages/noted_sync/test/helpers.dart' show FakeClock;
+import 'support/android_publish.dart';
 import 'support/binder_seams.dart';
 import 'support/real_io.dart' show realIoUntil;
 import 'support/page_save.dart';
@@ -649,7 +662,7 @@ final String _goodName = attachmentFileName(contentHash(_goodBytes), 'bin');
 // One sequence
 
 class _Run {
-  _Run(this.seed, {this.mobile = false}) : rng = Random(seed);
+  _Run(this.seed, {this.mobile = false, this.android = false}) : rng = Random(seed);
 
   final int seed;
 
@@ -657,6 +670,11 @@ class _Run {
   /// container, `<root>/c1/Documents/Noted/...`, which [containerMove] renames.
   /// The random sequences don't use it; the container probes do.
   final bool mobile;
+
+  /// Publishes the way Android does after SELinux refuses `link` (run
+  /// 2026-11-25-01, task 1): see `support/android_publish.dart`. Independent of
+  /// [mobile], so the random sequences run it in the desktop layout.
+  final bool android;
   final Random rng;
   final List<String> trace = [];
 
@@ -706,6 +724,7 @@ class _Run {
 
   Future<void> start() async {
     root = await Directory.systemTemp.createTemp('noted_reload');
+    if (android) useAndroidPublish();
     if (mobile) {
       await _useContainer('c1');
       final n = '${root.path}${sep}c1${sep}Documents${sep}Noted';
@@ -771,6 +790,7 @@ class _Run {
 
   Future<void> stop() async {
     debugDefaultTargetPlatformOverride = null;
+    if (android) resetAndroidPublish();
     resetDeviceStorage();
     for (final n in {nb, ..._spare}) {
       if (_gone.add(n)) n.dispose();
@@ -5574,9 +5594,9 @@ void main() {
   // done it copies and keeps the originals, which the `move:copy*` and
   // `move:deleteOriginal*` kinds model as a page kept in both places (`_dups`).
 
-  Future<void> sequence(int seed) async {
-    _started++;
-    final run = _Run(seed);
+  Future<void> sequence(int seed, {bool mobile = false, bool android = false}) async {
+    if (!android) _started++;
+    final run = _Run(seed, mobile: mobile, android: android);
     try {
       await run.start();
       for (var i = 1; i <= _steps; i++) {
@@ -5585,6 +5605,7 @@ void main() {
       await run.nb.flush();
       await run.verify('end', fresh: true);
       if (_xOnly.isNotEmpty) expect(run.kinds, contains(_xOnly), reason: 'the forced kind never ran (its preconditions were not met)');
+      if (android) expect(androidLinkCalls, greaterThan(0), reason: 'the sequence never published through the Android path');
       if (const bool.fromEnvironment('RELOAD_TRACE')) debugPrint(run.trace.join('\n'));
     } finally {
       _seen.addAll(run.kinds);
@@ -5616,6 +5637,28 @@ void main() {
     final missing = _expectedKinds.difference(_seen);
     expect(missing, isEmpty, reason: 'steps the seeds never made (reached: $_seen)');
   });
+
+  // Android's publish (run 2026-11-25-01, task 1): `link` is refused (EACCES),
+  // so every publish is a rename after an lstat. The desktop layout, so every
+  // check applies; the existing `conflict:stealPublish` fault creates the
+  // target in `beforeOsCall`, before the first OS call, so "never replaces" is
+  // exercised. The mobile smoke seed is 914: the sequences were made for the
+  // desktop layout, and seed 912 fails in the mobile layout with or without
+  // android ("nothing was deleted" at `delete:trashRestoredBeforeWatcherQuit`),
+  // as did 7 of the 10 seeds tried with android.
+  for (var seed = 1; seed <= 8; seed++) {
+    test(
+      'android publish, seed $seed: the files and a fresh notebook equal the model',
+      () => sequence(seed, android: true),
+      timeout: const Timeout(Duration(minutes: 3)),
+    );
+  }
+
+  test(
+    'android publish, mobile layout (one smoke seed, 914): the files and a fresh notebook equal the model',
+    () => sequence(914, mobile: true, android: true),
+    timeout: const Timeout(Duration(minutes: 3)),
+  );
 
   group('the app container changes between launches (iOS paths, run 2026-11-05-05)', () {
     for (final oldBuild in [false, true]) {

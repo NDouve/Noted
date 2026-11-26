@@ -197,6 +197,15 @@ void main() {
       await into(t, 'N');
       await t.tap(find.byKey(const ValueKey('picker-use')));
       await io(t, turns: 40);
+      // The first check runs on real IO; on a slow runner it can still be
+      // running after the fixed turns, so wait for it (bounded) before
+      // reading the status.
+      String? status() => find.byKey(const ValueKey('od-status')).evaluate().isEmpty
+          ? null
+          : t.widget<Text>(find.byKey(const ValueKey('od-status'))).data;
+      for (var i = 0; i < 120 && !(status()?.startsWith('Up to date') ?? false); i++) {
+        await io(t, turns: 1);
+      }
       expect(find.byKey(const ValueKey('od-choose')), findsNothing, reason: 'no way to pick another');
       expect(t.widget<Text>(find.byKey(const ValueKey('od-path'))).data, 'Documents/Notes');
       expect(t.widget<Text>(find.byKey(const ValueKey('od-status'))).data, 'Up to date, checked 14:05');
