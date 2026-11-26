@@ -733,7 +733,12 @@ class _Sim {
     w.channel.onVersions = (path, temps) => point('versionTemp');
     f.landingStep = (step, path) async => point('landing:$step');
     // What the daemon or another device does inside the resolve call (t3c).
-    w.channel.onResolve = (path, id) => resolveActs.remove(id)?.call();
+    w.channel.onResolve = (path, id) {
+      // A landing of a process that was killed does nothing to the world.
+      final tag = Zone.current[#life];
+      if (tag != null && tag != life) return;
+      resolveActs.remove(id)?.call();
+    };
   }
 
   /// One-shot replaces armed by the conflict ops, run when the landing resolves
@@ -1179,6 +1184,7 @@ class _Sim {
         final copy = _copyHolding(file, versionText);
         if (copy == null) return;
         daemonWrite(copy, writePage(current.insertNode(box(c))));
+        unawaited(w.channel.emit('changed', {'path': copy.path})); // as a daemon's write is announced
         claim(c, 'a daemon replace of the copy of a version of ${_base(file.path)}');
       };
     }
@@ -1464,14 +1470,6 @@ class _Sim {
       w.clock!.advance(const Duration(minutes: 31));
       await nb.folderTickForTest();
       await f.versionAskIdle;
-      // The presenter tells the app of each copy a landing made (the platform's
-      // echo of Noted's own write), as it does for any new file.
-      phase = 'settle: copies';
-      for (final e in w.drive.listSync(followLinks: false)) {
-        if (e is File && RegExp(r'-icloud-[0-9a-f]+\.canvas$').hasMatch(_base(e.path))) {
-          await w.channel.emit('changed', {'path': e.path});
-        }
-      }
       phase = 'settle: checkFolders';
       await nb.checkFolders();
       phase = 'settle: scan';
