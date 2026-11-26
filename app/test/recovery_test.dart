@@ -15,6 +15,7 @@ import 'package:noted/src/recovery_store.dart';
 import 'package:noted/src/save_trouble.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
+import 'package:noted_core/src/storage/dataless.dart' show debugDatalessPaths, debugMarkDataless, debugUnmarkDataless;
 import 'support/page_save.dart';
 import 'support/scripted_coordinator.dart';
 import 'support/notebook_folder.dart';
@@ -462,6 +463,55 @@ void main() {
         original,
         store,
       );
+    }
+
+    // 0190, R-2: a page that is not downloaded at the replay's re-read is never
+    // read or taken for absent. The entry waits, and lands once the page is back.
+    for (final stub in [true, false]) {
+      test('a page evicted ${stub ? 'to a stub only' : 'but present'} at the re-read waits: the entry stays, nothing is read, the edit lands once it is back', () async {
+        final (again, x, original, _) = await setUp1((_, _, _) {});
+        addTearDown(() {
+          storedReadObserver = null;
+          debugDatalessPaths = null;
+        });
+        final asked = <String>[];
+        again.askDownload = (p) async {
+          asked.add(p);
+          return null;
+        };
+        final reads = <String>[];
+        void Function()? back;
+        again.syncHook = (point, path) async {
+          if (point != 'recover-reread' || back != null) return;
+          final f = File(path);
+          if (stub) {
+            final text = f.readAsStringSync();
+            final s = File('${f.parent.path}/.${f.uri.pathSegments.last}.icloud');
+            f.deleteSync();
+            s.writeAsStringSync('');
+            back = () {
+              s.deleteSync();
+              f.writeAsStringSync(text);
+            };
+          } else {
+            debugMarkDataless(path);
+            back = () => debugUnmarkDataless(path);
+          }
+          storedReadObserver = (p) {
+            if (p.endsWith('$x.canvas')) reads.add(p);
+          };
+        };
+        await again.load();
+        expect(back, isNotNull);
+        expect(recFiles(), isNotEmpty, reason: 'the entry stays');
+        expect(reads, isEmpty, reason: 'nothing was read');
+        expect(asked.map((p) => p.replaceAll(r'\', '/')), contains(pageFile(extra, x).path.replaceAll(r'\', '/')));
+        back!();
+        await again.recoverNowForTest();
+        expect(recFiles(), isEmpty);
+        final disk = readPage(pageFile(extra, x).readAsStringSync());
+        expect(disk.nodes, hasLength(original.nodes.length + 1), reason: 'the pending box landed');
+      });
     }
 
     test('a newer generation landing before the publish is merged, not overwritten', () async {
@@ -1650,6 +1700,49 @@ void main() {
       expect(disk.node('theirbox'), isNotNull, reason: 'their box must survive the next save');
       expect(disk.nodes.length, 3);
     });
+
+    // 0190, R-2: a file that is not downloaded is not a file that is gone. The
+    // page stays read-only, nothing is written, and it is merged once it is back.
+    for (final stub in [true, false]) {
+      test('the file ${stub ? 'a stub only' : 'present but dataless'}: the page is read-only "still downloading", asked for, nothing written; merged once it is back', () async {
+        addTearDown(() => debugDatalessPaths = null);
+        final (nb, x, _) = await pendingEdit();
+        await nb.flush();
+        final asked = <String>[];
+        nb.askDownload = (p) async {
+          asked.add(p);
+          return null;
+        };
+        await vanish(nb);
+        final text = pageFile(away, x).readAsStringSync();
+        final stubName = '.$x.canvas.icloud';
+        if (stub) {
+          pageFile(away, x).deleteSync();
+          File('${away.path}/$stubName').writeAsStringSync('');
+        }
+        await restore();
+        final file = pageFile(extra, x);
+        if (!stub) debugMarkDataless(file.path);
+        await nb.checkFolders();
+        expect(nb.current!.readOnly, isTrue, reason: 'not editable while its file is not there to merge');
+        expect(nb.readOnlyReason, contains('still downloading'));
+        expect(asked.map((p) => p.replaceAll(r'\', '/')), contains(file.path.replaceAll(r'\', '/')));
+        if (stub) {
+          expect(file.existsSync(), isFalse, reason: 'nothing was written over the stub');
+        } else {
+          expect(file.readAsStringSync(), text);
+        }
+        // Back: the change event merges it, and the page is editable again.
+        if (stub) {
+          File('${extra.path}/$stubName').deleteSync();
+          file.writeAsStringSync(text);
+        } else {
+          debugUnmarkDataless(file.path);
+        }
+        await nb.checkFile(file.path);
+        expect(nb.current!.readOnly, isFalse);
+      });
+    }
 
     test('a file reported before the page is resumed is merged into it', () async {
       final plan = _Landing();
