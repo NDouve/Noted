@@ -210,8 +210,10 @@ void main() {
       // The original is evicted while the merge reads it: the merge is refused as busy (dataless).
       final original = file.readAsStringSync();
       var evicted = false;
+      var reads = 0;
       storedReadObserver = (p) {
-        if (evicted || !p.endsWith('gone1.canvas')) return;
+        // The first read of the original finds it (the copy's original); the second is the merge's.
+        if (evicted || !p.endsWith('gone1.canvas') || ++reads < 2) return;
         evicted = true;
         file.deleteSync();
         File(w.path('.gone1.canvas.icloud')).writeAsStringSync('');
@@ -229,6 +231,10 @@ void main() {
       File(w.path('.gone1.canvas.icloud')).deleteSync();
       file.writeAsStringSync(original);
       await w.channel.emit('changed', {'path': file.path});
+      // The page's save, held by the eviction, is retried by this event; the copy is
+      // merged at the next look at it (the folder check).
+      await waitFor(() => !nb.trouble.isTrouble, what: 'the page to be saved');
+      await nb.checkFolders();
       await waitFor(() => !copy.existsSync(), what: 'the copy to merge');
       await waitFor(() => nb.unreadable.isEmpty, what: 'the row to go');
       expect(readPage(file.readAsStringSync()).node(box.id), isNotNull);

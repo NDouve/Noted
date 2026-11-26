@@ -11007,7 +11007,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
     } on _NotDownloaded {
       return false; // asked for; the entry stays and is looked at again
-    } on Object {
+    } on Object catch (e) {
+      // The page is not downloaded: the entry stays, [m.failed] as it is.
+      if (e is StorageBusy && e.reason == StorageBusyReason.dataless) return false;
       m.failed = true;
       rethrow;
     }
@@ -13940,8 +13942,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       switch (await _read(originalPath)) {
         case final StoredBytes b:
           text = b.text;
+        // Not downloaded: asked for. A passing failure (the copy is kept and
+        // merged when the original is looked at again).
         case StoredNotDownloaded():
-          throw const _NotDownloaded();
+          throw StorageBusy(StorageBusyReason.dataless, [originalPath]);
         case StoredMissing():
           throw PathNotFoundException(originalPath, const OSError('No such file or directory', 2));
         case StoredFailed(:final error):
