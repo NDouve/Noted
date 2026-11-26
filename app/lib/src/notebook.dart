@@ -90,6 +90,13 @@ class _SourceChanged implements Exception {
   const _SourceChanged();
 }
 
+// A conflict-copy merge that failed for a reason that passes: the files kept
+// changing under it, or an open page's read-back was another writer's. The copy
+// is retried (a failure of any other kind keeps it listed).
+class _PassingFailure extends FormatException {
+  _PassingFailure(super.message);
+}
+
 // How a compare-and-swap page write ended: whether it landed, the identity
 // published (null when nobody asked and the feed wasn't live), and whether
 // nothing was written because the page's file is at another path.
@@ -1475,6 +1482,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // read of the page file holds them (_recheckConsumedCopy), by generation.
   // Memory only: after a restart the entry is an ordinary one with no base.
   final Map<String, _ConsumedCopy> _consumedCopies = {};
+  // The mark of a copy whose delete is still to be done, by the copy's key, with
+  // the text it holds (a retried delete reuses it).
+  final Map<String, ({String text, _ConsumedCopy mark})> _consumedForCopy = {};
 
   // Whether [e] is an edit waiting to land: not landed, and not a consumed
   // copy kept only until its merge is seen to hold.
@@ -1931,6 +1941,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// moment.
   @visibleForTesting
   Future<void> Function(String point, String path)? syncHook;
+
+  /// A test seam: sees the page a closed page's conflict-copy merge produced,
+  /// and returns the page to write (a merge that drops a node).
+  @visibleForTesting
+  NotedPage Function(NotedPage merged)? conflictMergeHook;
 
   /// Test seam: makes the notebook think page [id] is in [loc] (null: in none),
   /// as a move or a vanished folder would, without touching any file.
@@ -12618,15 +12633,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // downloaded when they were looked at) are looked at again now it is there.
   Future<void> _recheckCopiesWaitingFor(String path) => _inFlight('recheckCopiesWaitingFor', () => _recheckCopiesWaitingForInner(path));
 
-  // A copy listed "Could not be merged" for a reason that passes (the folder was
-  // busy, the original not downloaded, the files kept changing) is looked at
-  // again; one that is unreadable or invalid stays listed.
-  static bool _transientMergeFailure(String reason) =>
-      reason.startsWith('Could not be merged into its page') &&
-      // "node or box … is missing": the merged page was not what the verify read back (a writer replaced it meanwhile).
-      (reason.contains('The folder is busy') ||
-          reason.contains('being used by another process') || // a sharing violation (Windows)
-          reason.contains('keep changing') || RegExp(r'FormatException: (node|box) \w+ is missing').hasMatch(reason));
+  // Copies listed "Could not be merged" for a reason that passes, by key of the
+  // copy file: the folder or the file was busy (a StorageBusy, or an OS busy
+  // code), the original changed under the merge, or an open page's read-back
+  // was another writer's. Set where the failure is caught, by its type; a copy
+  // whose merge was refused for good (unreadable, invalid, or one that dropped
+  // something) stays listed and is not retried.
+  final Set<String> _passingCopies = {};
+
+  static bool _passingFailure(Object e) => e is _SourceChanged || e is _PassingFailure || e is StorageBusy || isBusyError(e);
 
   Future<void> _recheckCopiesWaitingForInner(String path) async {
     final name = path.split(RegExp(r'[\/]')).last;
@@ -12638,7 +12653,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final waiting = <String>[
       for (final list in lists)
         for (final u in list)
-          if ((u.reason == PageStore.copyOfDatalessReason || _transientMergeFailure(u.reason)) &&
+          if ((u.reason == PageStore.copyOfDatalessReason || (_passingCopies.contains(_key(u.path)) && u.reason.startsWith('Could not be merged'))) &&
               conflictCopyOriginalNames(u.path.split(RegExp(r'[\/]')).last).contains(name))
             u.path,
     ];
@@ -12657,7 +12672,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       for (final list in lists)
         for (final u in list)
           // A copy that waited for its original, which has arrived without an event.
-          if (_transientMergeFailure(u.reason) || (u.reason == PageStore.copyOfDatalessReason && !PageStore.hasDatalessOriginal(u.path))) u.path,
+          if ((_passingCopies.contains(_key(u.path)) && u.reason.startsWith('Could not be merged')) || (u.reason == PageStore.copyOfDatalessReason && !PageStore.hasDatalessOriginal(u.path))) u.path,
     ]);
   }
 
@@ -13711,7 +13726,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           await _mergeConflictCopy(loc, path, originalPath!, copy, time, text);
           break;
         } on _SourceChanged {
-          if (attempt >= 4) throw const FormatException('the page files keep changing');
+          if (attempt >= 4) throw _PassingFailure('the page files keep changing');
           try {
             PageStore.fileReadObserver?.call(path);
             text = await File(path).readAsString();
@@ -13726,10 +13741,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         }
       }
       _known.remove(key);
+      _passingCopies.remove(key);
       _dropUnreadable(loc, path);
     } on Object catch (e) {
       debugPrint('Merging conflict copy $path failed, keeping it: $e');
       _known.remove(key);
+      // Retried when the original is seen and at the folder check only if the
+      // failure is one that passes, by its type (not by its words).
+      if (_passingFailure(e)) {
+        _passingCopies.add(key);
+      } else {
+        _passingCopies.remove(key);
+      }
       _knownUnreadable(loc, key, path, 'Could not be merged into its page: $e');
     }
     return true;
@@ -13785,17 +13808,24 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       _noteDiskText(originalPath, text);
       final original = readPage(text);
       final top = _topOfChain(loc, original);
-      final merged = mergeConflictCopy(
-        original,
-        copy,
-        _mergeCodecs(id, [original, copy]),
-        copyTime: time,
-        topOfChain: top,
-      ).page;
+      final merged = (conflictMergeHook ?? (p) => p)(
+        mergeConflictCopy(
+          original,
+          copy,
+          _mergeCodecs(id, [original, copy]),
+          copyTime: time,
+          topOfChain: top,
+        ).page,
+      );
       final out = writePage(merged);
       if (out == text) {
         return (open: false, failure: verifyConflictCopyMerge(readPage(text), original, copy, topOfChain: top));
       }
+      // A merge that drops a node of the original or the copy is refused before
+      // anything is written: the original is never replaced by a page that lost
+      // something (a failure here is not a passing one).
+      final dropped = verifyConflictCopyMerge(readPage(out), original, copy, topOfChain: top);
+      if (dropped != null) return (open: false, failure: dropped);
       // Make the store write to the file the original was read from.
       if (_key(st.pathFor(id)) != _key(originalPath)) {
         await _scan(st);
@@ -13815,11 +13845,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
 
     String? failure;
+    var fromOpen = false; // the open page's read-back can be another writer's file
     var settled = false;
     for (var round = 0; round < 3 && !settled; round++) {
       final c = _current;
       if (c != null && openHere()) {
         failure = await openBranch(c);
+        fromOpen = true;
         settled = true;
         continue;
       }
@@ -13835,12 +13867,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
       if (!r.open) {
         failure = r.failure;
+        fromOpen = false;
         settled = true;
       }
     }
     // Opened and closed again every round: leave the copy for the next check.
     if (!settled) throw const _SourceChanged();
-    if (failure != null) throw FormatException(failure);
+    if (failure != null) throw fromOpen ? _PassingFailure(failure) : FormatException(failure);
     if (copyPath == null) return; // a redo: the entry is the copy
     // Delete the copy only if it is still exactly what was merged.
     await syncHook?.call('copy-merged', copyPath);
@@ -13858,7 +13891,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // back after the check above, and then the copy's content would be in no
     // file. Also when the merge wrote nothing (it may have been written before
     // a crash or a refusal here). The re-check waits until the delete is over.
-    final mark = await _keepConsumedCopy(st, copy, time);
+    // A retry (the delete was refused as busy) of the same copy and text reuses
+    // the entry and mark it already has: none is added at each folder check.
+    final ck = _key(copyPath);
+    final prior = _consumedForCopy[ck];
+    final _ConsumedCopy mark;
+    if (prior != null && prior.text == consumed && identical(_consumedCopies[prior.mark.gen], prior.mark)) {
+      mark = prior.mark..deleting = true;
+    } else {
+      mark = await _keepConsumedCopy(st, copy, time);
+      _consumedForCopy[ck] = (text: consumed, mark: mark);
+    }
     final DeleteResult deleted;
     try {
       // Deleted only if it still holds exactly the text that was merged, checked
@@ -13872,6 +13915,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     } finally {
       mark.deleting = false;
     }
+    if (deleted.deleted || deleted.outcome == DeleteOutcome.absent) _consumedForCopy.remove(ck);
     if (deleted.deleted) await syncHook?.call('copy-deleted', copyPath);
     if (!deleted.deleted && deleted.outcome != DeleteOutcome.absent) throw const _SourceChanged();
   }

@@ -1704,7 +1704,11 @@ class IcloudFolders extends ChangeNotifier {
       } on Object {
         // A partial twin is removed (checked, by what it holds) before the failure goes on.
         final have = await _readOrNull(s.path);
-        if (have != null) await _removeTemp(s.path, have);
+        if (have != null) {
+          await _removeTemp(s.path, have);
+        } else {
+          debugPrint('Noted: a staged version temp could not be read back and stays for the next landing: ${s.path}');
+        }
         rethrow;
       }
       return s;
