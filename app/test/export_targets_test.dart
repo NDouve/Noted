@@ -65,11 +65,16 @@ void main() {
   });
 
   test('case does not matter where paths are case-insensitive, and does where they are not', () {
+    // No file system in the way (its own case rules, and a parent that does not
+    // exist is refused): only the comparison of components.
+    String same(String p) => p;
     final upper = sub(pages, 'X.txt').replaceFirst('pages', 'PAGES');
-    expect(check(caseInsensitive: true).refuses(upper), isTrue);
-    expect(check(caseInsensitive: false).refuses(sub(outside, 'x.txt').replaceFirst('Documents', 'documents')), isFalse);
+    expect(check(caseInsensitive: true, resolve: same).refuses(upper), isTrue);
+    expect(check(caseInsensitive: false, resolve: same).refuses(upper), isFalse);
     // Components compare lowercased when insensitive: a different-case root name.
-    expect(check(caseInsensitive: true, roots: [pages.path.toUpperCase()]).refuses(sub(pages, 'x.txt')), isTrue);
+    final roots = [pages.path.toUpperCase()];
+    expect(check(caseInsensitive: true, resolve: same, roots: roots).refuses(sub(pages, 'x.txt')), isTrue);
+    expect(check(caseInsensitive: false, resolve: same, roots: roots).refuses(sub(pages, 'x.txt')), isFalse);
   });
 
   test('a symlink into a refused folder is refused', () {

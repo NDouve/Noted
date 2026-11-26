@@ -227,7 +227,8 @@ void main() {
     test('a failure before publishing leaves nothing but the target as it was', () async {
       File(target).writeAsStringSync('old');
       final r = await write(
-        writer(publish: (tmp, to) async => throw const FileSystemException('refused')),
+        // Links are known to work (a probe would otherwise take the publish seam too).
+        writer(hardLinks: (_) async => true, publish: (tmp, to) async => throw const FileSystemException('refused')),
         'new',
       );
       expect(r.kind, ExportWriteKind.failed);
