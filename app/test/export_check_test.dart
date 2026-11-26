@@ -21,11 +21,11 @@ import 'package:noted_core/noted_core.dart';
 int decodes = 0;
 
 class _Codec extends BoxCodec<String> {
-  const _Codec(this.typeId, {this.version = 1});
+  const _Codec(this.typeId);
   @override
   final String typeId;
   @override
-  int get dataVersion => version;
+  int get dataVersion => 1;
   @override
   BoxApiVersion get apiVersion => boxApiVersion;
   @override
