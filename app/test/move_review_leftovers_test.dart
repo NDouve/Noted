@@ -17,6 +17,7 @@ import 'package:noted/main.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
 import 'support/notebook_folder.dart';
+import 'support/page_reads.dart';
 
 // A store whose new files and deletes of the pages named can be made to fail.
 class _FailStore extends PageStore {
@@ -82,12 +83,12 @@ void main() {
     reads = [];
     hook = null;
     store = _FailStore(pages);
-    PageStore.fileReadObserver = reads.add;
+    storedReadObserver = pageReadsInto(reads);
     Notebook.pairLockLimit = const Duration(milliseconds: 150);
     Notebook.pairRetryDelay = const Duration(milliseconds: 10);
   });
   tearDown(() async {
-    PageStore.fileReadObserver = null;
+    storedReadObserver = null;
     Notebook.pairLockLimit = const Duration(seconds: 5);
     Notebook.pairRetryDelay = const Duration(milliseconds: 500);
     Notebook.forceCopyMoveForTest = false;

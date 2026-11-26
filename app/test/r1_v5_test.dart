@@ -15,6 +15,7 @@ import 'package:noted/src/save_trouble.dart';
 import 'package:noted_core/noted_core.dart';
 import 'package:noted_core/src/storage/dataless.dart' show debugDatalessAbi, debugResetDataless;
 
+import 'support/page_reads.dart';
 import 'support/trouble_world.dart';
 
 void main() {
@@ -838,7 +839,10 @@ void main() {
     test('the save asks for the download, keeps the edit in recovery and says why; Retry lands it', () async {
       final nb = w.make();
       final asked = <String>[];
-      nb.requestDownload = asked.add;
+      nb.askDownload = (p) async {
+        asked.add(p);
+        return null;
+      };
       final id = await w.editedPage(nb);
       final path = w.pageFile(id).path;
       w.storeFor(w.pages).failWith = StorageBusy(StorageBusyReason.dataless, [path]);
@@ -856,7 +860,10 @@ void main() {
     test('a stub-only open page is not read or taken for gone: the save keeps the edit and says it is downloading', () async {
       final nb = w.make();
       final asked = <String>[];
-      nb.requestDownload = asked.add;
+      nb.askDownload = (p) async {
+        asked.add(p);
+        return null;
+      };
       final id = await w.editedPage(nb);
       final file = w.pageFile(id);
       file.deleteSync();
@@ -874,13 +881,16 @@ void main() {
     test('an open page that is not downloaded is never read, and its edit is kept', () async {
       final nb = w.make();
       final asked = <String>[];
-      nb.requestDownload = asked.add;
+      nb.askDownload = (p) async {
+        asked.add(p);
+        return null;
+      };
       final id = await w.editedPage(nb);
       final before = w.pageFile(id).readAsStringSync();
       final reads = <String>[];
-      PageStore.fileReadObserver = reads.add;
+      storedReadObserver = pageReadsInto(reads);
       addTearDown(() {
-        PageStore.fileReadObserver = null;
+        storedReadObserver = null;
         debugDatalessAbi = null;
         debugResetDataless();
       });

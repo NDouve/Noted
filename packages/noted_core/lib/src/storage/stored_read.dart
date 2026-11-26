@@ -96,6 +96,15 @@ typedef StoredFile = StoredOpen<RandomAccessFile>;
 /// it is downloaded. A seam for tests that count reads; null in production.
 void Function(String path)? storedReadObserver;
 
+// Tells the observer of a file about to be read, when there is one to read: a
+// read of a file that is not there opens nothing.
+void _observe(String path) {
+  final observer = storedReadObserver;
+  if (observer == null) return;
+  if (FileSystemEntity.typeSync(path, followLinks: false) == FileSystemEntityType.notFound) return;
+  observer(path);
+}
+
 /// The gate: whether the data of the file at [path] is not on this device (a
 /// dataless file, or a stub with no file). Metadata only.
 bool notDownloaded(String path) => isDataless(path);
@@ -128,7 +137,7 @@ Future<StoredRead> readStored(String path, {DownloadAsk? ask}) async {
     askSafely(path, ask);
     return StoredNotDownloaded(path);
   }
-  storedReadObserver?.call(path);
+  _observe(path);
   try {
     return StoredBytes(path, await File(path).readAsBytes());
   } on FileSystemException catch (e) {
@@ -142,7 +151,7 @@ StoredRead readStoredSync(String path, {DownloadAsk? ask}) {
     askSafely(path, ask);
     return StoredNotDownloaded(path);
   }
-  storedReadObserver?.call(path);
+  _observe(path);
   try {
     return StoredBytes(path, File(path).readAsBytesSync());
   } on FileSystemException catch (e) {
@@ -161,7 +170,7 @@ Future<StoredStream> openStoredRead(
     askSafely(path, ask);
     return StoredRefused(StoredNotDownloaded(path));
   }
-  storedReadObserver?.call(path);
+  _observe(path);
   final RandomAccessFile raf;
   try {
     raf = await File(path).open();
@@ -207,7 +216,7 @@ Future<StoredFile> openStoredFile(String path, {DownloadAsk? ask}) async {
     askSafely(path, ask);
     return StoredRefused(StoredNotDownloaded(path));
   }
-  storedReadObserver?.call(path);
+  _observe(path);
   try {
     return StoredOpened(await File(path).open());
   } on FileSystemException catch (e) {
@@ -221,7 +230,7 @@ StoredFile openStoredFileSync(String path, {DownloadAsk? ask}) {
     askSafely(path, ask);
     return StoredRefused(StoredNotDownloaded(path));
   }
-  storedReadObserver?.call(path);
+  _observe(path);
   try {
     return StoredOpened(File(path).openSync());
   } on FileSystemException catch (e) {

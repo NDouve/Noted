@@ -913,6 +913,20 @@ class IcloudFolders extends ChangeNotifier {
     );
   }
 
+  /// The awaited form of [startDownloading], for the routed read's [DownloadAsk]:
+  /// null once the platform took the request (or when it is not active), else
+  /// the platform's message. Never throws, never waits for the download.
+  Future<String?> askDownload(String path) async {
+    if (!active) return null;
+    try {
+      await _channel.invoke('startDownloading', {'path': path});
+      return null;
+    } on Object catch (e) {
+      debugPrint('Noted: startDownloading failed: $e');
+      return '$e';
+    }
+  }
+
   // -- Versions (R5.8) --------------------------------------------------------
 
   Future<void> _landTail = Future<void>.value();
@@ -1176,12 +1190,9 @@ class IcloudFolders extends ChangeNotifier {
   }
 
   Future<Uint8List?> _readOrNull(String path) async {
-    try {
-      if (isDataless(path)) return null;
-      return await File(path).readAsBytes();
-    } on FileSystemException {
-      return null;
-    }
+    // Not downloaded, gone or failed: no bytes.
+    final r = await readStored(path, ask: askDownload);
+    return r is StoredBytes ? r.bytes : null;
   }
 
   Future<void> _removeTemp(String tmp, List<int> bytes) async {
@@ -1436,12 +1447,11 @@ class IcloudFolders extends ChangeNotifier {
     final name = m.group(1)!;
     final target = _targetOf(name);
     final kind = _kindOf(target.name);
-    final Uint8List bytes;
-    try {
-      bytes = await t.readAsBytes();
-    } on FileSystemException {
-      return;
-    }
+    // A leftover temp that is not downloaded (or can't be read) is left for the
+    // next sweep.
+    final read = await readStored(t.path, ask: askDownload);
+    if (read is! StoredBytes) return;
+    final bytes = read.bytes;
     if (bytes.isEmpty) {
       await _removeTemp(t.path, bytes);
       return;
@@ -1542,12 +1552,10 @@ class IcloudFolders extends ChangeNotifier {
         final nonce = base64Decode(old.nonce);
         for (final name in [old.name, '${old.name}.part']) {
           final f = File('$root$_sep$name');
-          Uint8List? bytes;
-          try {
-            bytes = await f.readAsBytes();
-          } on FileSystemException {
-            bytes = null;
-          }
+          // One that is not downloaded or can't be read counts as unreadable: a
+          // fresh probe is written.
+          final read = await readStored(f.path, ask: askDownload);
+          final bytes = read is StoredBytes ? read.bytes : null;
           if (bytes != null && _bytesEqual(bytes, nonce)) {
             await deleteFileIfMatches(f.path, bytes: nonce);
           }

@@ -277,12 +277,12 @@ void main() {
       final nb = Notebook(PageStore(dir('pages')), buildModules(), icloud: f);
       notebooks.add(nb);
       final file = '${dir('Drive').path}/x.canvas';
-      nb.requestDownload!(file);
+      await nb.askDownload!(file);
       await Future<void>.delayed(Duration.zero);
       expect(channel.callsOf('startDownloading').single.args['path'], file);
       final plain = Notebook(PageStore(dir('pages2')), buildModules());
       notebooks.add(plain);
-      expect(plain.requestDownload, isNull);
+      expect(plain.askDownload, isNull);
     });
 
     test('a probe whose entry is no longer in the list is not on record: the root stays read-only', () async {

@@ -82,7 +82,7 @@ void main() {
       final nb = Notebook(PageStore(w.drive), buildModules());
       w.notebooks.add(nb);
       await nb.load();
-      expect(nb.requestDownload, isNull);
+      expect(nb.askDownload, isNull);
       expect(nb.cloudVersionIssues, isEmpty);
     });
   });
