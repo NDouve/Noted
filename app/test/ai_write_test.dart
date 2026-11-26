@@ -912,6 +912,355 @@ void main() {
       });
     }
 
+    // Holds the lookup of the write whose content is [of] until `hold`
+    // completes; every lookup is recorded in `seen`.
+    ({Completer<void> hold, List<String> seen}) holdLookup(Notebook nb, {String of = 'A'}) {
+      final hold = Completer<void>();
+      final seen = <String>[];
+      nb.aiLookupHook = (r) async {
+        seen.add(r.content);
+        if (r.content == of) await hold.future;
+      };
+      return (hold: hold, seen: seen);
+    }
+
+    Future<void> settle() => Future<void>.delayed(const Duration(milliseconds: 100));
+
+    test('a write whose lookup is slow is applied before the one behind it', () async {
+      final t = await withBox();
+      await t.nb.handleAiLink(req('ba', t.code, content: 'warm up'));
+      await t.nb.createPage(); // t.a is closed now
+      final h = holdLookup(t.nb);
+      final order = <String>[];
+      final a = t.nb.handleAiLink(req('ba', t.code, content: 'A')).then((r) {
+        order.add('A');
+        return r;
+      });
+      final b = t.nb.handleAiLink(req('ba', t.code, content: 'B', mode: AiLinkMode.append)).then((r) {
+        order.add('B');
+        return r;
+      });
+      await settle();
+      expect(h.seen, ['A'], reason: 'B does not start its lookup before A is done');
+      h.hold.complete();
+      expect((await a).ok && (await b).ok, isTrue);
+      expect(order, ['A', 'B']);
+      await t.nb.open(t.a);
+      expect(dataOf(t.nb, 'ba')['text'], 'AB');
+    });
+
+    test('writes of a code that is not approved yet are applied in the order they came', () async {
+      final t = await withBox();
+      await t.nb.createPage(); // t.a is closed now
+      final h = holdLookup(t.nb);
+      final a = t.nb.handleAiLink(req('ba', t.code, content: 'A'));
+      final b = t.nb.handleAiLink(req('ba', t.code, content: 'B', mode: AiLinkMode.append));
+      await settle();
+      expect(asked, hasLength(1), reason: 'one shared question');
+      expect(h.seen, ['A'], reason: 'B reaches the lookup only after A is done');
+      h.hold.complete();
+      expect((await a).ok && (await b).ok, isTrue);
+      await t.nb.open(t.a);
+      expect(dataOf(t.nb, 'ba')['text'], 'AB');
+    });
+
+    test('a write waits for the save of the one before it before its question is shown', () async {
+      final t = await withBox();
+      await t.nb.handleAiLink(req('ba', t.code, content: 'warm up'));
+      await service.setAskBeforeWrite('ba', true);
+      await t.nb.createPage(); // t.a is closed now
+      final save = Completer<void>();
+      var held = false;
+      t.nb.syncHook = (p, _) async {
+        if (p == 'closed-reread' && !held) {
+          held = true;
+          await save.future;
+        }
+      };
+      int writeQuestions() => asked.where((r) => r.perWrite).length;
+      final a = t.nb.handleAiLink(req('ba', t.code, content: 'A'));
+      await until(() => held);
+      expect(writeQuestions(), 1);
+      final b = t.nb.handleAiLink(req('ba', t.code, content: 'B', mode: AiLinkMode.append));
+      await settle();
+      expect(writeQuestions(), 1, reason: "B's question waits for A's save");
+      save.complete();
+      expect((await a).ok && (await b).ok, isTrue);
+      expect(writeQuestions(), 2);
+      await t.nb.open(t.a);
+      expect(dataOf(t.nb, 'ba')['text'], 'AB');
+    });
+
+    test('a write that came after one that gave up still waits for the first (C while A is held)', () async {
+      timings = const AiLinkTimings(approval: Duration(seconds: 5), deadline: Duration(milliseconds: 300));
+      final t = await withBox();
+      await t.nb.handleAiLink(req('ba', t.code, content: 'warm up'));
+      await t.nb.createPage(); // t.a is closed now
+      final h = holdLookup(t.nb);
+      final order = <String>[];
+      Future<AiLinkResponse> send(String tag, AiLinkMode mode) =>
+          t.nb.handleAiLink(req('ba', t.code, content: tag, mode: mode)).then((r) {
+            order.add(tag);
+            return r;
+          });
+      final a = send('A', AiLinkMode.replace);
+      await settle();
+      final b = send('B', AiLinkMode.append);
+      expect(((await b) as AiLinkError).code, AiLinkCode.busy, reason: 'B gave up at its deadline');
+      // C comes after B gave up and before A is released.
+      final c = send('C', AiLinkMode.append);
+      await settle();
+      h.hold.complete();
+      final cr = await c;
+      expect((await a).ok, isTrue);
+      if (cr.ok) {
+        expect(order.indexOf('A'), lessThan(order.indexOf('C')), reason: 'C is never applied before A');
+      } else {
+        expect((cr as AiLinkError).code, AiLinkCode.busy);
+      }
+      await t.nb.open(t.a);
+      expect(dataOf(t.nb, 'ba')['text'], cr.ok ? 'AC' : 'A');
+    });
+
+    test("a new code's write waits for a held write of the old code on the same box", () async {
+      final t = await withBox();
+      await t.nb.handleAiLink(req('ba', t.code, content: 'warm up'));
+      await t.nb.createPage(); // t.a is closed now
+      final h = holdLookup(t.nb);
+      final order = <String>[];
+      final a = t.nb.handleAiLink(req('ba', t.code, content: 'A')).then((r) {
+        order.add('A');
+        return r;
+      });
+      await settle();
+      // A new Writer code replaces the old one; its question is allowed.
+      final fresh = await issue('ba', label: 'New chat');
+      final b = t.nb.handleAiLink(req('ba', fresh, content: 'B', mode: AiLinkMode.append)).then((r) {
+        order.add('B');
+        return r;
+      });
+      await settle();
+      expect(asked, hasLength(2), reason: "the old code's question, then the new code's");
+      expect(h.seen, ['A'], reason: "B's lookup waits for A, though its code was approved later");
+      h.hold.complete();
+      expect((await b).ok, isTrue);
+      await a;
+      expect(order, ['A', 'B']);
+    });
+
+    for (final turnOn in [true, false]) {
+      test('Ask before each write turned ${turnOn ? 'on' : 'off'} while a write waits its turn is respected', () async {
+        final t = await withBox();
+        await t.nb.handleAiLink(req('ba', t.code, content: 'warm up'));
+        await service.setAskBeforeWrite('ba', !turnOn);
+        await t.nb.createPage(); // t.a is closed now
+        final h = holdLookup(t.nb);
+        final a = t.nb.handleAiLink(req('ba', t.code, content: 'A'));
+        final b = t.nb.handleAiLink(req('ba', t.code, content: 'B', mode: AiLinkMode.append));
+        await settle();
+        await service.setAskBeforeWrite('ba', turnOn);
+        h.hold.complete();
+        expect((await a).ok && (await b).ok, isTrue);
+        // On: only B is asked (A came before the change). Off: only A is.
+        expect(asked.where((r) => r.perWrite).map((r) => r.preview), [turnOn ? 'Add: B' : 'Replace with: A']);
+        await t.nb.open(t.a);
+        expect(dataOf(t.nb, 'ba')['text'], 'AB');
+      });
+    }
+
+    test('a write to another box is not held by a question open on this one', () async {
+      final t = await withBox();
+      t.nb.current!.insertBox(box('bb', text: 'old'));
+      await t.nb.flush();
+      final other = await issue('bb', label: 'Other chat');
+      await t.nb.handleAiLink(req('ba', t.code, content: 'warm up'));
+      await t.nb.handleAiLink(req('bb', other, content: 'warm up'));
+      await service.setAskBeforeWrite('ba', true);
+      final gate = Completer<bool>();
+      answer = (r) => r.perWrite ? gate.future : Future.value(true);
+      final x = t.nb.handleAiLink(req('ba', t.code, content: 'X'));
+      await until(() => asked.any((r) => r.perWrite));
+      expect((await t.nb.handleAiLink(req('bb', other, content: 'Y'))).ok, isTrue);
+      expect(dataOf(t.nb, 'bb')['text'], 'Y');
+      expect(dataOf(t.nb, 'ba')['text'], 'warm up');
+      gate.complete(true);
+      expect((await x).ok, isTrue);
+    });
+
+    group('a write that ends early hands the box to the next', () {
+      test('its lookup throws', () async {
+        final t = await withBox();
+        await t.nb.handleAiLink(req('ba', t.code, content: 'warm up'));
+        await t.nb.createPage(); // t.a is closed now
+        final hold = Completer<void>();
+        t.nb.aiLookupHook = (r) async {
+          if (r.content == 'A') {
+            await hold.future;
+            throw StateError('lookup failed');
+          }
+        };
+        final a = t.nb.handleAiLink(req('ba', t.code, content: 'A')).then<Object?>((_) => null, onError: (Object e) => e);
+        final b = t.nb.handleAiLink(req('ba', t.code, content: 'B', mode: AiLinkMode.append));
+        await settle();
+        hold.complete();
+        expect(await a, isA<StateError>());
+        expect((await b).ok, isTrue);
+        await t.nb.open(t.a);
+        expect(dataOf(t.nb, 'ba')['text'], 'warm upB');
+      });
+
+      test('its client is gone', () async {
+        final t = await withBox();
+        await t.nb.handleAiLink(req('ba', t.code, content: 'warm up'));
+        await t.nb.createPage(); // t.a is closed now
+        final h = holdLookup(t.nb);
+        var open = true;
+        final a = t.nb.handleAiLink(req('ba', t.code, content: 'A'), () => open);
+        final b = t.nb.handleAiLink(req('ba', t.code, content: 'B', mode: AiLinkMode.append));
+        await settle();
+        open = false;
+        h.hold.complete();
+        expect(((await a) as AiLinkError).code, AiLinkCode.busy);
+        expect((await b).ok, isTrue);
+        await t.nb.open(t.a);
+        expect(dataOf(t.nb, 'ba')['text'], 'warm upB');
+      });
+    });
+
+    test('a write whose client has gone when its turn comes is not started', () async {
+      final t = await withBox();
+      await t.nb.handleAiLink(req('ba', t.code, content: 'warm up'));
+      await t.nb.createPage(); // t.a is closed now
+      final h = holdLookup(t.nb);
+      var open = true;
+      final a = t.nb.handleAiLink(req('ba', t.code, content: 'A'));
+      final b = t.nb.handleAiLink(req('ba', t.code, content: 'B', mode: AiLinkMode.append), () => open);
+      await settle();
+      open = false;
+      h.hold.complete();
+      expect((await a).ok, isTrue);
+      expect(((await b) as AiLinkError).code, AiLinkCode.busy);
+      expect(h.seen, ['A'], reason: 'nothing of B started');
+      await t.nb.open(t.a);
+      expect(dataOf(t.nb, 'ba')['text'], 'A');
+    });
+
+    test('a denied write leaves nothing behind that holds the box', () async {
+      timings = const AiLinkTimings(
+        approval: Duration(seconds: 5),
+        deadline: Duration(seconds: 3),
+        denyCooldown: Duration(milliseconds: 200),
+      );
+      final t = await withBox();
+      answer = (_) async => false;
+      expect(await codeOf(t.nb, req('ba', t.code, content: 'denied')), AiLinkCode.notApproved);
+      expect(await codeOf(t.nb, req('ba', t.code, content: 'again')), AiLinkCode.notApproved);
+      expect(asked, hasLength(1), reason: 'the retry in the pause is refused without a question');
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      answer = (_) async => true;
+      expect((await t.nb.handleAiLink(req('ba', t.code, content: 'allowed'))).ok, isTrue);
+      final watch = Stopwatch()..start();
+      expect((await t.nb.handleAiLink(req('ba', t.code, content: ' more', mode: AiLinkMode.append))).ok, isTrue);
+      expect(watch.elapsedMilliseconds, lessThan(2000), reason: 'not held until its deadline');
+      expect(dataOf(t.nb, 'ba')['text'], 'allowed more');
+    });
+
+    test('a code revoked while its question is open refuses the write and frees the box', () async {
+      timings = const AiLinkTimings(approval: Duration(seconds: 5), deadline: Duration(seconds: 3));
+      final t = await withBox();
+      final id = stored(t.code).id;
+      answer = (_) async {
+        await service.revoke(id);
+        return true;
+      };
+      expect(await codeOf(t.nb, req('ba', t.code, content: 'revoked')), AiLinkCode.badCode);
+      final next = await issue('ba', label: 'Second chat');
+      answer = (_) async => true;
+      final watch = Stopwatch()..start();
+      expect((await t.nb.handleAiLink(req('ba', next, content: 'next'))).ok, isTrue);
+      expect(watch.elapsedMilliseconds, lessThan(2000));
+      expect(dataOf(t.nb, 'ba')['text'], 'next');
+    });
+
+    test('a write that ended before any question does not turn the next one away', () async {
+      final t = await withBox();
+      await t.nb.handleAiLink(req('ba', t.code, content: 'warm up'));
+      await service.setAskBeforeWrite('ba', true);
+      await t.nb.createPage(); // t.a is closed now
+      final file = File('${pages.path}/${t.a}.canvas');
+      final clean = file.readAsStringSync();
+      final hold = Completer<void>();
+      t.nb.aiLookupHook = (r) async {
+        if (r.content == 'A') {
+          await hold.future;
+          // The box conflicted while A waited: A is refused before any question.
+          final page = readPage(clean);
+          final theirs = BoxRecord.create(
+            id: 'ba',
+            typeId: 'test.ai',
+            dataVersion: 1,
+            bounds: const Bounds(40, 40, 200, 80),
+            data: RawJson.encode({'by': null, 'text': 'elsewhere'}),
+            snapshotText: 'elsewhere',
+            rev: 'r-other',
+          );
+          final mine = page.node('ba')! as BoxRecord;
+          file.writeAsStringSync(
+            writePage(page.replaceNode(mine.withConflict(BoxConflict.other(node: theirs.toRaw(), at: 5)))),
+          );
+        } else {
+          file.writeAsStringSync(clean); // the conflict is resolved before B starts
+        }
+      };
+      final a = t.nb.handleAiLink(req('ba', t.code, content: 'A'));
+      await settle();
+      final b = t.nb.handleAiLink(req('ba', t.code, content: 'B', mode: AiLinkMode.append));
+      await settle();
+      hold.complete();
+      expect(((await a) as AiLinkError).code, AiLinkCode.conflict);
+      expect((await b).ok, isTrue);
+      expect(asked.where((r) => r.perWrite).map((r) => r.preview), ['Add: B'], reason: 'B was asked, not turned away');
+    });
+
+    group('too little time to ask', () {
+      test('at its turn: busy, no question shown', () async {
+        timings = const AiLinkTimings(approval: Duration(seconds: 5), deadline: Duration(seconds: 3));
+        final t = await withBox();
+        await t.nb.handleAiLink(req('ba', t.code, content: 'warm up'));
+        await service.setAskBeforeWrite('ba', true);
+        expect(await codeOf(t.nb, req('ba', t.code, content: 'late')), AiLinkCode.busy);
+        expect(asked.where((r) => r.perWrite), isEmpty);
+        expect(dataOf(t.nb, 'ba')['text'], 'warm up');
+      });
+
+      test("while its question waits behind another code's", () async {
+        timings = const AiLinkTimings(
+          approval: Duration(seconds: 5),
+          deadline: Duration(milliseconds: 5600),
+          reachLookup: Duration(milliseconds: 100),
+        );
+        // The least time a question needs is 5.1 s (reachLookup + 5 s), so the
+        // 1 s the other question takes leaves too little of the 5.6 s.
+        final t = await withBox();
+        await t.nb.handleAiLink(req('ba', t.code, content: 'warm up'));
+        await service.setAskBeforeWrite('ba', true);
+        final other = await issue('ba', role: AiCodeRole.reader, label: 'Other');
+        final gate = Completer<bool>();
+        answer = (r) => r.perWrite ? Future.value(true) : gate.future;
+        final reading = t.nb.handleAiLink(
+          AiLinkAccess(code: other, session: 'o1', app: 'B', action: AiLinkAction.readBox, target: 'ba'),
+        );
+        await settle();
+        final write = codeOf(t.nb, req('ba', t.code, content: 'late'));
+        await Future<void>.delayed(const Duration(milliseconds: 1000));
+        gate.complete(true);
+        expect(await write, AiLinkCode.busy);
+        await reading;
+        expect(asked.where((r) => r.perWrite), isEmpty);
+        expect(dataOf(t.nb, 'ba')['text'], 'warm up');
+      }, timeout: const Timeout(Duration(seconds: 30)));
+    });
+
     test('a request before the notebook has loaded waits for it', () async {
       final first = await withBox();
       first.nb.dispose();
