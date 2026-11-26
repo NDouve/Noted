@@ -12798,7 +12798,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (!_disposed && !isDataless(path)) {
       // The open page's save that this file held lands first, so a copy's retry
       // below merges into a file that holds the page.
-      if (id != null && id == _current?.page.id && _trouble.isTrouble && _trouble.pageId == id) {
+      if (id != null && id == _current?.page.id && _preview == null && _trouble.isTrouble && _trouble.pageId == id) {
         await retrySave();
       }
       await _recheckCopiesWaitingFor(path);
@@ -13906,7 +13906,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       _known.remove(key);
       // The page it is a copy of is not downloaded: listed as waiting for it, and
       // merged when it is there (on its event, or at the folder check).
-      if (e is StorageBusy && e.reason == StorageBusyReason.dataless) {
+      if (e is StorageBusy &&
+          e.reason == StorageBusyReason.dataless &&
+          originalPath != null &&
+          e.paths.any((p) => _key(p) == _key(originalPath!))) {
         _passingCopies.remove(key);
         _knownUnreadable(loc, key, path, PageStore.copyOfDatalessReason);
         return true;

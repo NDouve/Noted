@@ -166,6 +166,18 @@ void main() {
     expect(((await openStoredRead(p('nope'))) as StoredRefused).result, isA<StoredMissing>());
   });
 
+  test('ContentIdentity.ofFile closes its handle when the length fails', () async {
+    final f = File(p('a.bin'))..writeAsBytesSync(List.filled(1000, 7));
+    await IOOverrides.runZoned(
+      () => expectLater(ContentIdentity.ofFile(f.path), throwsA(isA<FileSystemException>())),
+      createFile: (path) => _LengthFails(Zone.root.run(() => File(path))),
+    );
+    // A handle left open would hold the file (on Windows it blocks the rename).
+    final moved = f.renameSync(p('b.bin'));
+    moved.deleteSync();
+    expect(File(p('b.bin')).existsSync(), isFalse);
+  });
+
   test('debugDatalessPaths matches a path given by its 8.3 short form', () async {
     Directory(p('a long folder name')).createSync();
     final f = File(p('a long folder name${Platform.pathSeparator}a long file name.canvas'))..writeAsStringSync('x');
@@ -184,4 +196,23 @@ void main() {
     debugUnmarkDataless(f.path);
     expect(await readStored(short), isA<StoredBytes>());
   }, skip: Platform.isWindows ? null : 'Windows only');
+}
+
+/// A file whose length fails (a file that went between the open and the length).
+class _LengthFails implements File {
+  _LengthFails(this._f);
+
+  final File _f;
+
+  @override
+  String get path => _f.path;
+
+  @override
+  Future<RandomAccessFile> open({FileMode mode = FileMode.read}) => _f.open(mode: mode);
+
+  @override
+  Future<int> length() => throw FileSystemException('gone', _f.path);
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError('${invocation.memberName}');
 }

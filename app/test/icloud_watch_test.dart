@@ -191,7 +191,7 @@ void main() {
       expect(readPage(file.readAsStringSync()).node(box.id), isNotNull, reason: 'the copy\'s box is on the page');
     });
 
-    test('a copy whose merge was refused for a passing reason (busy) is merged when its original is looked at again, with no relaunch', () async {
+    test("a copy whose original is not downloaded at the merge (the open page) is merged on the original's event, with no relaunch", () async {
       final f = await w.picked(platform: CloudPlatform.ios);
       await externalPage('gone1');
       final nb = w.notebook(f);
@@ -332,6 +332,25 @@ void main() {
       expect(s.nb.current!.page.node('00000000000000a1'), isNotNull);
       expect(s.file.readAsStringSync(), s.original);
       expect(s.copy.existsSync(), isTrue);
+    });
+
+    // A passing reason other than not downloaded (the folder is busy): the copy is
+    // retried on the original's own event, with no folder check (t2b).
+    test("a copy refused as busy is merged on the original's event, with no folder check", () async {
+      final f = await w.picked(platform: CloudPlatform.ios);
+      final s = await withCopy(f);
+      final c = ScriptedCoordinator();
+      unregisterCoordinator(w.drive.path);
+      registerScripted(w.drive, c);
+      c.refuse = (write) => true;
+      await w.channel.emit('changed', {'path': s.copy.path});
+      await waitFor(() => s.nb.unreadable.any((u) => u.reason.startsWith('Could not be merged into its page')), what: 'the refused merge');
+      expect(s.copy.existsSync(), isTrue);
+      c.refuse = null;
+      await w.channel.emit('changed', {'path': s.file.path});
+      await waitFor(() => !s.copy.existsSync(), what: 'the copy to merge');
+      await waitFor(() => s.nb.unreadable.isEmpty, what: 'the row to go');
+      expect(readPage(s.file.readAsStringSync()).node('00000000000000c3'), isNotNull);
     });
 
     test('the original never sends an event: the folder check merges a copy refused as busy', () async {
