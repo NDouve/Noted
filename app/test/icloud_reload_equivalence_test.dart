@@ -58,7 +58,7 @@ import '../../packages/noted_mcp/lib/src/closed_writer.dart';
 import 'support/busy_retry.dart';
 import 'support/icloud_world.dart';
 import 'support/io_trace.dart' show IoTrace, TracingIoOverrides;
-import 'support/notebook_folder.dart' show deleteTestFolder;
+import 'support/notebook_folder.dart' show deleteTestFolder, inFlightOf;
 
 const int _extraSeeds = int.fromEnvironment('ICLOUD_SEEDS', defaultValue: 0);
 const int _fixedSeeds = 40;
@@ -1414,7 +1414,11 @@ class _Sim {
     return out.toString();
   }
 
+  /// A test seam: awaited first in [dispose] (a disposal that hangs).
+  Future<void> Function()? disposeSeam;
+
   Future<void> dispose() async {
+    await disposeSeam?.call();
     await w.dispose();
     if (snapRoot.existsSync()) await deleteTestFolder(snapRoot);
   }
@@ -1461,11 +1465,13 @@ Future<void> _sequence(
   int seed, {
   void Function(_Sim)? setUp,
   List<String>? plan,
+  Duration disposeLimit = const Duration(seconds: 90),
 }) async {
   final s = _Sim(seed);
   setUp?.call(s);
   final recorder = _Recorder(s);
   await IOOverrides.runWithIOOverrides(() async {
+    Object? failure;
     try {
       Future<void> whole() async {
         await s.boot();
@@ -1489,8 +1495,26 @@ Future<void> _sequence(
           'seed $seed hung in ${s.phase}; steps: ${s.log.join(', ')}',
         ),
       );
+    } catch (e) {
+      failure = e;
+      rethrow;
     } finally {
-      await s.dispose().timeout(const Duration(seconds: 15), onTimeout: () {});
+      // The settle helper reports stuck work after 20 s and a delete retries for
+      // 20 s: the limit is above both, and a disposal that does not finish
+      // fails the seed (0192) instead of letting it pass. The seed's own
+      // failure, when there is one, is the one reported.
+      try {
+        await s.dispose().timeout(
+          disposeLimit,
+          onTimeout: () => throw TestFailure(
+            'seed $seed: disposal did not finish within $disposeLimit (phase ${s.phase}); '
+            'in flight: ${inFlightOf(s.w.notebooks) ?? 'nothing'}; steps: ${s.log.join(', ')}',
+          ),
+        );
+      } catch (e) {
+        if (failure == null) rethrow;
+        debugPrint('seed $seed: disposal also failed: $e');
+      }
     }
   }, TracingIoOverrides(recorder));
   if (setUp == null) _ran++;
@@ -1686,6 +1710,26 @@ void main() {
         }
       }
     });
+
+    // A disposal that hangs fails the seed, naming what is in flight (it used
+    // to be cut off after 15 s and the seed passed).
+    test('a disposal that does not finish fails the seed', () async {
+      await expectLater(
+        () => _sequence(
+          3,
+          setUp: (s) => s.disposeSeam = () => Completer<void>().future,
+          plan: const ['appEdit', 'appCheck'],
+          disposeLimit: const Duration(milliseconds: 300),
+        ),
+        throwsA(
+          isA<TestFailure>().having(
+            (e) => e.message,
+            'message',
+            allOf(contains('disposal did not finish'), contains('in flight:')),
+          ),
+        ),
+      );
+    }, timeout: const Timeout(Duration(minutes: 4)));
 
     test('every kill point was reached by some seed', () {
       if (_ran < _fixedSeeds) return; // a single seed was asked for
