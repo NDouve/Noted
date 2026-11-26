@@ -141,7 +141,11 @@ adb shell am start -W -n "$PKG/.MainActivity"
 sleep 15
 adb shell am start -W -n "$PKG/.MainActivity" --activity-multiple-task
 sleep 10
-records=$(adb shell dumpsys activity activities | tr -d '\r' | grep 'ActivityRecord{' | grep -c "$PKG/.MainActivity")
+# One activity appears on several dumpsys lines (Hist, Resumed, focus...), so
+# count distinct record ids, not lines.
+records=$( (adb shell dumpsys activity activities | tr -d '\r' \
+  | grep -oE "ActivityRecord\{[0-9a-f]+ u[0-9]+ $PKG/\.MainActivity" || true) \
+  | sort -u | wc -l | tr -d ' ')
 starts=$(flutter_log | grep -c NOTED_MAIN_START)
 echo "NOTED_ONE_ENGINE activity_records=$records main_starts=$starts (both must be 1)"
 adb shell dumpsys activity activities | tr -d '\r' | grep 'ActivityRecord{' | sed 's/^/NOTED_ONE_ENGINE_RECORD /'
