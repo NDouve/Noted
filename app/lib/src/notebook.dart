@@ -1958,6 +1958,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   @visibleForTesting
   Future<void> Function(String point, String path)? syncHook;
 
+  /// A test seam: awaited in an AI write right before it looks up the page of
+  /// its box, so a test can hold or fail one write's lookup.
+  @visibleForTesting
+  Future<void> Function(AiLinkWriteBox request)? aiLookupHook;
+
   /// A test seam: sees the page a closed page's conflict-copy merge produced,
   /// and returns the page to write (a merge that drops a node).
   @visibleForTesting
@@ -9495,11 +9500,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     required DateTime deadline,
     required AiLinkCode? Function() recheck,
     Future<AiLinkCode?> Function()? confirm,
+    void Function(bool open)? onAsked,
   }) async {
     final left = deadline.difference(DateTime.now());
     if (!await aiWaitLoaded(left.isNegative ? Duration.zero : left)) return AiLinkResponse.error(AiLinkCode.busy);
     final refusal = recheck();
     if (refusal != null) return AiLinkResponse.error(refusal);
+    await aiLookupHook?.call(request);
     final pageId = await aiPageOfBox(request.box, hint: code.target.page);
     if (pageId == null) return AiLinkResponse.error(AiLinkCode.noBox);
     if (confirm != null) {
@@ -9507,7 +9514,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // question that waits doesn't hold up other requests.
       final no = await _aiPrecheck(pageId, request, code, recheck);
       if (no != null) return no;
-      final refused = await confirm();
+      onAsked?.call(true);
+      final AiLinkCode? refused;
+      try {
+        refused = await confirm();
+      } finally {
+        onAsked?.call(false);
+      }
       if (refused != null) return AiLinkResponse.error(refused);
     }
     final run = _aiQueue.then((_) => _aiApply(pageId, request, code, recheck));

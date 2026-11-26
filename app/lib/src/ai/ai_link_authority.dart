@@ -86,6 +86,11 @@ class AiLinkTimings {
     this.reachLookup = const Duration(seconds: 2),
   });
 
+  /// The least time a per-write question needs: naming what is reached, then
+  /// five seconds to answer. With less left the write answers `busy` before any
+  /// question is shown.
+  Duration get minQuestion => reachLookup + const Duration(seconds: 5);
+
   /// The most time naming what a code reaches may take before a question is
   /// asked; past it the question names only the code.
   final Duration reachLookup;
@@ -138,7 +143,8 @@ abstract interface class AiLinkHost {
   /// there (null) or why not; call it right before the change. [confirm],
   /// when not null, asks the user about this write once the write is known to
   /// be valid: null if allowed, else the refusal (`not_approved`, or `busy`
-  /// when no question can be asked now). Waiting for the load ends at
+  /// when no question can be asked now). [onAsked] hears `true` when
+  /// [confirm] starts and `false` when it returns. Waiting for the load ends at
   /// [deadline].
   Future<AiLinkResponse> aiWriteBox(
     AiLinkWriteBox request,
@@ -146,10 +152,34 @@ abstract interface class AiLinkHost {
     required DateTime deadline,
     required AiLinkCode? Function() recheck,
     Future<AiLinkCode?> Function()? confirm,
+    void Function(bool open)? onAsked,
   });
 }
 
-enum _Answer { allowed, denied, none }
+enum _Answer { allowed, denied, none, noTime }
+
+// A write's place in line for its box. The write is applied only when every
+// ticket ahead is done.
+class _BoxTicket {
+  _BoxTicket(this.prev, this.codeId);
+
+  // The ticket ahead; null once it is done (or there was none).
+  _BoxTicket? prev;
+  final String codeId;
+  final Completer<void> done = Completer<void>();
+
+  // Whether this write's per-write question is open now.
+  bool asking = false;
+}
+
+// A write of a code that isn't approved yet, in the order it arrived. Its
+// ticket is given when the code is allowed.
+class _Waiting {
+  _Waiting(this.box);
+
+  final String box;
+  _BoxTicket? ticket;
+}
 
 /// Decides every `ai-link/2` request (invariant 4): the code, its expiry, its
 /// role and target, the code's approval (asked once per code), the Writer
@@ -218,6 +248,55 @@ class AiLinkAuthority {
   // question isn't asked again in this run.
   final Set<String> _closedAsked = {};
 
+  // The last ticket for each box, by box id: writes to one box are applied in
+  // the order they arrived.
+  final Map<String, _BoxTicket> _boxTail = {};
+
+  // The writes of each code that isn't approved yet, in arrival order, until
+  // the question about the code is answered.
+  final Map<String, List<_Waiting>> _approvalOrder = {};
+
+  // Takes the next place for [box]. Synchronous, so arrival order is ticket
+  // order.
+  _BoxTicket _take(String box, String codeId) {
+    final prev = _boxTail[box];
+    final mine = _BoxTicket(prev, codeId);
+    _boxTail[box] = mine;
+    if (prev != null) {
+      unawaited(
+        prev.done.future.then((_) {
+          mine.prev = null;
+        }),
+      );
+    }
+    return mine;
+  }
+
+  // Gives the place back: [mine] is done once every ticket ahead is done, so a
+  // write that gave up early still holds the places behind it back.
+  void _release(String box, _BoxTicket mine) {
+    mine.asking = false;
+    void finish() {
+      if (!mine.done.isCompleted) mine.done.complete();
+      if (identical(_boxTail[box], mine)) _boxTail.remove(box);
+    }
+
+    final prev = mine.prev;
+    if (prev == null || prev.done.isCompleted) {
+      finish();
+    } else {
+      unawaited(prev.done.future.then((_) => finish()));
+    }
+  }
+
+  // Whether a ticket of the same code ahead of [mine] has its question open.
+  bool _askingAhead(_BoxTicket mine) {
+    for (var t = mine.prev; t != null; t = t.prev) {
+      if (!t.done.isCompleted && t.codeId == mine.codeId && t.asking) return true;
+    }
+    return false;
+  }
+
   Duration _remaining(DateTime deadline) {
     final d = deadline.difference(DateTime.now());
     return d.isNegative ? Duration.zero : d;
@@ -247,51 +326,70 @@ class AiLinkAuthority {
     final misfit = _fit(code, request);
     if (misfit != null) return done(AiLinkResponse.error(misfit));
 
-    if (!code.isApproved) {
-      final refusal = await _approveCode(_appName(request), code, deadline);
-      // Revoked or expired while the question was open: refuse.
-      final again = _verify(request.code);
-      if (again.error != null) {
-        final known = again.known ?? code;
-        _log(request, known, again.error!.wire);
-        return AiLinkResponse.error(again.error!);
-      }
-      code = again.code!;
-      if (refusal != null) return done(AiLinkResponse.error(refusal));
-      try {
-        service.store.approveCode(code.id);
-        service.changed();
-      } on Object {
-        return done(AiLinkResponse.error(AiLinkCode.busy));
+    // A write takes its place in line for its box now, so arrival order is
+    // kept. A code that isn't approved yet gets its places when it is allowed.
+    _BoxTicket? ticket;
+    _Waiting? waiting;
+    if (request is AiLinkWriteBox) {
+      if (code.isApproved) {
+        ticket = _take(request.box, code.id);
+      } else {
+        waiting = _Waiting(request.box);
+        (_approvalOrder[code.id] ??= []).add(waiting);
       }
     }
     try {
-      service.store.recordUse(code.id);
-    } on Object {
-      return done(AiLinkResponse.error(AiLinkCode.busy));
-    }
+      if (!code.isApproved) {
+        final refusal = await _approveCode(_appName(request), code, deadline, waiting: waiting);
+        // Revoked or expired while the question was open: refuse.
+        final again = _verify(request.code);
+        if (again.error != null) {
+          final known = again.known ?? code;
+          _log(request, known, again.error!.wire);
+          return AiLinkResponse.error(again.error!);
+        }
+        code = again.code!;
+        if (refusal != null) return done(AiLinkResponse.error(refusal));
+        try {
+          service.store.approveCode(code.id);
+          service.changed();
+        } on Object {
+          return done(AiLinkResponse.error(AiLinkCode.busy));
+        }
+      }
+      try {
+        service.store.recordUse(code.id);
+      } on Object {
+        return done(AiLinkResponse.error(AiLinkCode.busy));
+      }
 
-    final AiLinkResponse response;
-    switch (request) {
-      case AiLinkWriteBox():
-        response = await _write(request, code, deadline, open);
-      case AiLinkAccess():
-        response = await _access(request, code, deadline, open);
-      case AiLinkDescribeCode():
-        response = AiLinkResponse.described(
-          kind: code.target.kindName,
-          id: code.target.id,
-          role: code.roleName,
-          expires: code.expires?.toUtc().toIso8601String(),
-        );
-      case AiLinkMergeRequests():
-        response = await _mergeRequests(request, code, deadline, open);
-      case AiLinkProposeMerge():
-        response = await _proposeMerge(request, code, deadline, open);
-      case AiLinkMalformed():
-        response = AiLinkResponse.error(AiLinkCode.badRequest);
+      final AiLinkResponse response;
+      switch (request) {
+        case AiLinkWriteBox():
+          final mine = ticket ?? waiting!.ticket!;
+          ticket = mine;
+          response = await _write(request, code, deadline, open, mine);
+        case AiLinkAccess():
+          response = await _access(request, code, deadline, open);
+        case AiLinkDescribeCode():
+          response = AiLinkResponse.described(
+            kind: code.target.kindName,
+            id: code.target.id,
+            role: code.roleName,
+            expires: code.expires?.toUtc().toIso8601String(),
+          );
+        case AiLinkMergeRequests():
+          response = await _mergeRequests(request, code, deadline, open);
+        case AiLinkProposeMerge():
+          response = await _proposeMerge(request, code, deadline, open);
+        case AiLinkMalformed():
+          response = AiLinkResponse.error(AiLinkCode.badRequest);
+      }
+      return done(response);
+    } finally {
+      final held = ticket ?? waiting?.ticket;
+      if (held != null && request is AiLinkWriteBox) _release(request.box, held);
     }
-    return done(response);
   }
 
   // Checks the code against the store as it is now.
@@ -367,37 +465,60 @@ class AiLinkAuthority {
     DateTime deadline, {
     bool closedApp = false,
     void Function(bool allowed)? onAnswer,
+    _Waiting? waiting,
   }) async {
-    final cooling = _denied[code.id];
-    if (cooling != null) {
-      if (DateTime.now().isBefore(cooling)) return AiLinkCode.notApproved;
-      _denied.remove(code.id);
+    try {
+      final cooling = _denied[code.id];
+      if (cooling != null) {
+        if (DateTime.now().isBefore(cooling)) return AiLinkCode.notApproved;
+        _denied.remove(code.id);
+      }
+      final key = code.id;
+      var asking = _pending[key];
+      if (asking == null) {
+        // A new question: it takes one of the waiting places until answered.
+        if (!_canWait(code.id)) return AiLinkCode.busy;
+        _enter(code.id);
+        asking = _pending[key] = _ask(
+          app: app,
+          write: code.canWriteBox,
+          label: code.label,
+          target: code.target,
+          perWrite: false,
+          closedApp: closedApp,
+          deadline: deadline,
+        ).then((answer) {
+          // Before any request that joined resumes: on Allow, the writes still
+          // waiting get their places in the order they came; the list is
+          // cleared whatever the answer.
+          final order = _approvalOrder.remove(key);
+          if (answer == _Answer.allowed && order != null) {
+            for (final w in order) {
+              w.ticket = _take(w.box, key);
+            }
+          }
+          return answer;
+        }).whenComplete(() {
+          _pending.remove(key);
+          _leave(code.id);
+        });
+      }
+      final answer = await asking.timeout(_remaining(deadline), onTimeout: () => _Answer.none);
+      if (answer == _Answer.denied) {
+        _denied[code.id] = DateTime.now().add(timings.denyCooldown);
+      }
+      if (answer != _Answer.none) onAnswer?.call(answer == _Answer.allowed);
+      return answer == _Answer.allowed ? null : AiLinkCode.notApproved;
+    } finally {
+      // This write's own entry never outlives its request, on any return.
+      if (waiting != null) {
+        final list = _approvalOrder[code.id];
+        if (list != null) {
+          list.remove(waiting);
+          if (list.isEmpty) _approvalOrder.remove(code.id);
+        }
+      }
     }
-    final key = code.id;
-    var asking = _pending[key];
-    if (asking == null) {
-      // A new question: it takes one of the waiting places until answered.
-      if (!_canWait(code.id)) return AiLinkCode.busy;
-      _enter(code.id);
-      asking = _pending[key] = _ask(
-        app: app,
-        write: code.canWriteBox,
-        label: code.label,
-        target: code.target,
-        perWrite: false,
-        closedApp: closedApp,
-        deadline: deadline,
-      ).whenComplete(() {
-        _pending.remove(key);
-        _leave(code.id);
-      });
-    }
-    final answer = await asking.timeout(_remaining(deadline), onTimeout: () => _Answer.none);
-    if (answer == _Answer.denied) {
-      _denied[code.id] = DateTime.now().add(timings.denyCooldown);
-    }
-    if (answer != _Answer.none) onAnswer?.call(answer == _Answer.allowed);
-    return answer == _Answer.allowed ? null : AiLinkCode.notApproved;
   }
 
   /// Asks, once each, about the codes an AI app tried to use while Noted was
@@ -522,6 +643,11 @@ class AiLinkAuthority {
       unawaited(prev.then((_) => gate.complete()));
       return _Answer.none;
     }
+    // Too little time left to be answered: no question is shown.
+    if (perWrite && _remaining(deadline) < timings.minQuestion) {
+      gate.complete();
+      return _Answer.noTime;
+    }
     // Name what is reached first (bounded), then work out how long is left.
     final left = _remaining(deadline);
     final reach = await _reach(target, left < timings.reachLookup ? left : timings.reachLookup);
@@ -561,17 +687,46 @@ class AiLinkAuthority {
     }
   }
 
-  Future<AiLinkResponse> _write(AiLinkWriteBox req, AiCode code, DateTime deadline, bool Function() open) {
+  Future<AiLinkResponse> _write(
+    AiLinkWriteBox req,
+    AiCode code,
+    DateTime deadline,
+    bool Function() open,
+    _BoxTicket ticket,
+  ) async {
+    // One question per code: an earlier write of this code is being asked. Read
+    // here only to turn a write away at once; whether to ask is read again after
+    // the wait.
+    if (service.store.askBeforeWrite(req.box) && _askingAhead(ticket)) {
+      return AiLinkResponse.error(AiLinkCode.busy);
+    }
+    // Wait for the writes ahead, up to the deadline.
+    final ahead = ticket.prev;
+    if (ahead != null && !ahead.done.isCompleted) {
+      try {
+        await ahead.done.future.timeout(_remaining(deadline));
+      } on TimeoutException {
+        return AiLinkResponse.error(
+          AiLinkCode.busy,
+          'Noted is still applying an earlier write to this box.',
+        );
+      }
+    }
+    // Nobody is waiting for the answer: nothing else happens.
+    if (!open()) return AiLinkResponse.error(AiLinkCode.busy);
+    // The setting as it is now, after the wait (0108).
     final ask = service.store.askBeforeWrite(req.box);
     return host.aiWriteBox(
       req,
       code,
       deadline: deadline,
       recheck: () => _recheck(req.code, code.id, open),
+      onAsked: (asking) => ticket.asking = asking,
       confirm: !ask
           ? null
           : () async {
-              // No room to ask now: busy (try again), not a refusal.
+              // No room or time to ask now: busy (try again), not a refusal.
+              if (_remaining(deadline) < timings.minQuestion) return AiLinkCode.busy;
               if (!_canWait(code.id)) return AiLinkCode.busy;
               _enter(code.id);
               try {
@@ -584,6 +739,7 @@ class AiLinkAuthority {
                   preview: _preview(req),
                   deadline: deadline,
                 );
+                if (answer == _Answer.noTime) return AiLinkCode.busy;
                 return answer == _Answer.allowed ? null : AiLinkCode.notApproved;
               } finally {
                 _leave(code.id);
