@@ -32,6 +32,8 @@ const int _stFlagsAt = 116;
 bool isDataless(String path, {int? statFlags}) {
   final type = FileSystemEntity.typeSync(path, followLinks: false);
   if (type == FileSystemEntityType.notFound) return hasStub(path);
+  final marked = debugDatalessPaths;
+  if (marked != null && marked.contains(debugDatalessKey(path))) return true;
   if (statFlags != null) return statFlags & sfDataless != 0;
   return _flagsSayDataless(path);
 }
@@ -76,6 +78,38 @@ external int _lstat(Pointer<Uint8> path, Pointer<Uint8> buf);
   isLeaf: true,
 )
 external int _lstatInode64(Pointer<Uint8> path, Pointer<Uint8> buf);
+
+/// A test seam: existing files that count as dataless (present, not
+/// downloaded), by [debugDatalessKey]; null in production. Fill it with
+/// [debugMarkDataless], never by hand.
+Set<String>? debugDatalessPaths;
+
+/// Makes the existing file at [path] count as dataless (a test seam).
+void debugMarkDataless(String path) =>
+    (debugDatalessPaths ??= <String>{}).add(debugDatalessKey(path));
+
+/// Makes the file at [path] count as downloaded again (a test seam).
+void debugUnmarkDataless(String path) =>
+    debugDatalessPaths?.remove(debugDatalessKey(path));
+
+/// The key of [path] in [debugDatalessPaths]: the resolved absolute path, in
+/// lower case on Windows. A file that is not there has its folder resolved and
+/// its name kept, so an 8.3 short path matches the long one.
+String debugDatalessKey(String path) {
+  var p = File(path).absolute.path;
+  try {
+    p = File(p).resolveSymbolicLinksSync();
+  } on FileSystemException {
+    final cut = p.lastIndexOf(RegExp(r'[\\/]'));
+    try {
+      final dir = Directory(p.substring(0, cut)).resolveSymbolicLinksSync();
+      p = '$dir${Platform.pathSeparator}${p.substring(cut + 1)}';
+    } on FileSystemException {
+      // The folder is not there either: the absolute path stands.
+    }
+  }
+  return Platform.isWindows ? p.toLowerCase() : p;
+}
 
 /// A test seam: the [Abi] to act as, null in production.
 Abi? debugDatalessAbi;

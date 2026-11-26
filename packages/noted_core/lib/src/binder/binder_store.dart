@@ -11,6 +11,7 @@ import '../storage/coordination.dart';
 import '../storage/dataless.dart';
 import '../storage/exclusive_publish.dart';
 import '../storage/replace_if_unchanged.dart';
+import '../storage/stored_read.dart';
 import 'binder.dart';
 
 /// The result of reading a folder's binder file.
@@ -271,11 +272,18 @@ class BinderStore {
   /// Reads the folder's binder file.
   Future<BinderRead> read() async {
     final f = file;
-    // Not downloaded (or only its stub): present, never read, never missing.
-    if (isDataless(f.path)) return const BinderUnreadable(stillDownloading);
     try {
-      if (!await f.exists()) return const BinderMissing();
-      return BinderFound(Binder.parse(await f.readAsString()));
+      // Not downloaded (or only its stub): present, never read, never missing.
+      switch (await readStored(f.path)) {
+        case StoredNotDownloaded():
+          return const BinderUnreadable(stillDownloading);
+        case StoredMissing():
+          return const BinderMissing();
+        case StoredFailed(:final error):
+          return BinderUnreadable(error.message);
+        case final StoredBytes b:
+          return BinderFound(Binder.parse(b.text));
+      }
     } on BinderFormatException catch (e) {
       return BinderUnreadable(e.message);
     } on FileSystemException catch (e) {
@@ -331,18 +339,16 @@ class BinderStore {
     for (var attempt = 1; attempt <= tries; attempt++) {
       // U2. Read.
       final f = file;
-      if (isDataless(f.path)) {
-        return BinderRefused(
-          BinderRefusal.inUse,
-          'The binder file is still downloading',
-          kept: kept,
-        );
-      }
+      final read = await readStored(f.path);
       final List<int> bytes;
-      try {
-        bytes = await f.readAsBytes();
-      } on FileSystemException catch (e) {
-        if (_notFound(f.path)) {
+      switch (read) {
+        case StoredNotDownloaded():
+          return BinderRefused(
+            BinderRefusal.inUse,
+            'The binder file is still downloading',
+            kept: kept,
+          );
+        case StoredMissing():
           if (hasBinderAsideSync()) {
             return BinderRefused(
               BinderRefusal.inUse,
@@ -353,10 +359,12 @@ class BinderStore {
           return hasStub(f.path)
               ? BinderRefused(BinderRefusal.inUse, 'The binder file is still downloading', kept: kept)
               : BinderRefused(BinderRefusal.gone, 'The binder file is missing', kept: kept);
-        }
-        last = inUse(e);
-        if (attempt < tries) await Future<void>.delayed(retryDelay);
-        continue;
+        case StoredFailed(:final error):
+          last = inUse(error);
+          if (attempt < tries) await Future<void>.delayed(retryDelay);
+          continue;
+        case StoredBytes(bytes: final b):
+          bytes = b;
       }
       final Binder parsed;
       final String text;
@@ -517,8 +525,9 @@ class BinderStore {
   /// read synchronously.
   bool fileHoldsBinderSync(String binderId) {
     try {
-      if (isDataless(file.path)) return false;
-      return Binder.parse(utf8.decode(file.readAsBytesSync())).id == binderId;
+      final r = readStoredSync(file.path);
+      if (r is! StoredBytes) return false;
+      return Binder.parse(utf8.decode(r.bytes)).id == binderId;
     } on Object {
       return false;
     }
@@ -626,10 +635,13 @@ class BinderStore {
         Binder? binder;
         DateTime? modified;
         try {
-          if (!stubbed && !isDataless(e.path)) {
-            modified = e.lastModifiedSync();
-            bytes = await e.readAsBytes();
-            binder = Binder.parse(utf8.decode(bytes));
+          if (!stubbed) {
+            final r = await readStored(e.path);
+            if (r is StoredBytes) {
+              modified = e.lastModifiedSync();
+              bytes = r.bytes;
+              binder = Binder.parse(utf8.decode(bytes));
+            }
           }
         } on Object {
           // Unreadable or not a binder.
@@ -679,8 +691,13 @@ class BinderStore {
   ) async {
     final List<int> back;
     try {
-      if (!await temp.exists()) return;
-      back = await temp.readAsBytes();
+      final r = await readStored(temp.path);
+      if (r is StoredMissing) return;
+      if (r is! StoredBytes) {
+        kept.add(temp.path);
+        return;
+      }
+      back = r.bytes;
     } on FileSystemException {
       kept.add(temp.path);
       return;
@@ -725,7 +742,8 @@ class BinderStore {
 
   static bool _holds(String path, List<int> bytes) {
     try {
-      return _same(File(path).readAsBytesSync(), bytes);
+      final r = readStoredSync(path);
+      return r is StoredBytes && _same(r.bytes, bytes);
     } on FileSystemException {
       return false;
     }

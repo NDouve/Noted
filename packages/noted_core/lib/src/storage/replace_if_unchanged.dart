@@ -14,6 +14,7 @@ import 'coordination.dart';
 import 'dataless.dart';
 import 'drop_verified.dart';
 import 'exclusive_publish.dart' show publishExclusiveUncoordinated;
+import 'stored_read.dart';
 
 export 'drop_verified.dart' show verifiedSuffix;
 
@@ -121,9 +122,10 @@ Future<String?> _keepAsConflictCopy(File file, String target, String label) asyn
 Future<void> _dropLeftoverLink(File source, String published, String target) async {
   try {
     if (!await source.exists()) return;
-    if (isDataless(published) || isDataless(source.path)) return;
-    final publishedBytes = await File(published).readAsBytes();
-    await _dropAside(source, target, bytes: publishedBytes, late: false);
+    if (isDataless(source.path)) return;
+    final read = await readStored(published);
+    if (read is! StoredBytes) return;
+    await _dropAside(source, target, bytes: read.bytes, late: false);
   } on FileSystemException {
     // Leave it; the sweep treats it as a leftover and finds the target taken.
   }
@@ -523,10 +525,27 @@ Future<void> _sweepNamed(
 /// Whether [f] holds exactly [bytes] or has the content [identity] (give one).
 /// The length is cheap to compare before hashing.
 Future<bool> _matches(File f, List<int>? bytes, ContentIdentity? identity) async {
-  if (bytes != null) return _same(await f.readAsBytes(), bytes);
+  if (bytes != null) {
+    final r = await readStored(f.path);
+    if (r is StoredFailed) throw r.error;
+    if (r is StoredMissing) throw _gone(f.path);
+    return r is StoredBytes && _same(r.bytes, bytes);
+  }
   if (await f.length() != identity!.length) return false;
-  return await contentHashOfStream(f.openRead()) == identity.sha256;
+  switch (await openStoredRead(f.path)) {
+    case StoredOpened(:final value):
+      return await contentHashOfStream(value) == identity.sha256;
+    case StoredRefused(result: StoredFailed(:final error)):
+      throw error;
+    case StoredRefused(result: StoredMissing()):
+      throw _gone(f.path);
+    case StoredRefused():
+      return false;
+  }
 }
+
+FileSystemException _gone(String path) =>
+    PathNotFoundException(path, const OSError('No such file or directory', 2));
 
 bool _same(List<int> a, List<int> b) {
   if (a.length != b.length) return false;
@@ -668,7 +687,16 @@ class ContentIdentity {
   static Future<ContentIdentity> ofFile(String path) async {
     _requireDownloaded(path);
     final f = File(path);
-    return ContentIdentity(await f.length(), await contentHashOfStream(f.openRead()));
+    switch (await openStoredRead(path)) {
+      case StoredOpened(:final value):
+        return ContentIdentity(await f.length(), await contentHashOfStream(value));
+      case StoredRefused(result: StoredFailed(:final error)):
+        throw error;
+      case StoredRefused(result: StoredMissing()):
+        throw _gone(path);
+      case StoredRefused():
+        throw StorageBusy(StorageBusyReason.dataless, [path]);
+    }
   }
 
   /// The synchronous form of [ofFile], read in chunks, so a check that must not
@@ -678,7 +706,12 @@ class ContentIdentity {
     _requireDownloaded(path);
     final sink = _DigestSink();
     final input = crypto.sha256.startChunkedConversion(sink);
-    final file = File(path).openSync();
+    final file = switch (openStoredFileSync(path)) {
+      StoredOpened(:final value) => value,
+      StoredRefused(result: StoredFailed(:final error)) => throw error,
+      StoredRefused(result: StoredMissing()) => throw _gone(path),
+      StoredRefused() => throw StorageBusy(StorageBusyReason.dataless, [path]),
+    };
     var length = 0;
     try {
       final buffer = Uint8List(64 * 1024);
