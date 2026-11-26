@@ -32,6 +32,17 @@ import 'package:test_api/hooks.dart' show TestHandle;
 
 SendPort? _toWatchdog;
 
+/// Whether the watchdog fails the run: the test has run for [limit] and its
+/// isolate has not answered a ping for [blocked]. Either alone is not enough:
+/// a slow test that keeps answering is left to its own timeout, and a short
+/// silence is only a busy moment.
+bool shouldFire({
+  required Duration testElapsed,
+  required Duration sinceLastAnswer,
+  required Duration limit,
+  required Duration blocked,
+}) => testElapsed >= limit && sinceLastAnswer >= blocked;
+
 /// Records that the running test reached [step]; the watchdog prints the last
 /// one when it fires. Cheap (one message), a no-op when the watchdog is off.
 void stepForTest(String step) => _toWatchdog?.send(('step', step));
@@ -116,8 +127,12 @@ void _watch((SendPort, SendPort, int, int) args) {
     pings.send(inbox.sendPort);
     final name = test;
     if (name == null ||
-        started.elapsed.inSeconds < seconds ||
-        silent.elapsed.inSeconds < blockedSeconds) {
+        !shouldFire(
+          testElapsed: started.elapsed,
+          sinceLastAnswer: silent.elapsed,
+          limit: Duration(seconds: seconds),
+          blocked: Duration(seconds: blockedSeconds),
+        )) {
       return;
     }
     stderr.writeln(

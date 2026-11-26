@@ -348,6 +348,8 @@ void main() {
     await nb.flush();
     expect(nb.binders, isEmpty);
     expect(File('${root.path}/app/binders.json').readAsStringSync(), isNot(contains('Work')));
+    expect(nb.pageTitleOf(d.sub), isNull);
+    expect(nb.pageTitleOf(d.page), isNull);
   });
 
   testWidgets('the sidebar says "On another device" and keeps the pages, greyed', (tester) async {

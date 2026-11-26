@@ -22,10 +22,29 @@ void main() {
     }
   }, skip: _demo ? false : 'on request: set NOTED_WATCHDOG_DEMO=1');
 
-  // A slow test that still answers is not killed, however long it takes.
-  test('a slow test that yields is left alone', () async {
-    await Future<void>.delayed(const Duration(seconds: 4));
-  }, skip: _demo ? 'the child process runs the demo only' : false);
+  test(
+    'fires only when the test is over its limit and has stopped answering',
+    () {
+      const limit = Duration(minutes: 3);
+      const blocked = Duration(seconds: 30);
+      bool fires(int elapsedS, int silentS) => shouldFire(
+        testElapsed: Duration(seconds: elapsedS),
+        sinceLastAnswer: Duration(seconds: silentS),
+        limit: limit,
+        blocked: blocked,
+      );
+      // Over the limit and silent: blocked.
+      expect(fires(200, 30), isTrue);
+      expect(fires(180, 31), isTrue);
+      // A slow test that keeps answering is never failed, however long it runs.
+      expect(fires(600, 1), isFalse);
+      expect(fires(240, 29), isFalse);
+      // Silent, but not for long or not yet over the limit.
+      expect(fires(60, 120), isFalse);
+      expect(fires(179, 30), isFalse);
+    },
+    skip: _demo ? 'the child process runs the demo only' : false,
+  );
 
   // The demo, run as a child `flutter test`: the watchdog must end it with
   // exit code 1 and say why on stderr.
@@ -50,7 +69,11 @@ void main() {
       expect(out, contains('last step: about to block'));
       expect(r.exitCode, isNot(0));
     },
-    skip: _demo ? 'the child process runs the demo only' : false,
+    skip: _demo
+        ? 'the child process runs the demo only'
+        : Platform.environment['NOTED_WATCHDOG_CHILD'] == '1'
+        ? false
+        : 'on request: set NOTED_WATCHDOG_CHILD=1 (it runs flutter test in this folder, beside the suite)',
     timeout: const Timeout(Duration(seconds: 90)),
   );
 }

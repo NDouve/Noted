@@ -13117,6 +13117,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     final fresh = await _openBinder(path);
     // Removed or replaced while it was read: nothing of it comes back.
+    // A binder removed meanwhile leaves none of the pages that were read.
+    if (!_disposed && _binders[path] == null) _forgetPagesAt(path);
     if (_disposed || !identical(_binders[path], old)) return;
     fresh
       ..returnTo = old?.returnTo
@@ -13165,6 +13167,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   // Drops what the notebook knows of page [id] (not its file).
+  void _forgetPagesAt(String path) {
+    for (final id in [for (final e in _loc.entries) if (e.value == path) e.key]) {
+      _forgetPage(id);
+    }
+  }
+
   void _forgetPage(String id) {
     _metas.remove(id);
     _heldPlacement.remove(id);
@@ -15107,6 +15115,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       _forgetPage(e.key);
     }
     final fresh = await _openBinder(path);
+    // A binder removed meanwhile leaves none of the pages that were read.
+    if (!_disposed && _binders[path] == null) _forgetPagesAt(path);
     if (_disposed || !identical(_binders[path], old)) return;
     if (fresh.missing) return; // gone again
     if (fresh.status == BinderStatus.unavailable) {
