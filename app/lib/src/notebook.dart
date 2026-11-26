@@ -12624,7 +12624,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   static bool _transientMergeFailure(String reason) =>
       reason.startsWith('Could not be merged into its page') &&
       // "node or box … is missing": the merged page was not what the verify read back (a writer replaced it meanwhile).
-      (reason.contains('The folder is busy') || reason.contains('keep changing') || RegExp(r'FormatException: (node|box) \w+ is missing').hasMatch(reason));
+      (reason.contains('The folder is busy') ||
+          reason.contains('being used by another process') || // a sharing violation (Windows)
+          reason.contains('keep changing') || RegExp(r'FormatException: (node|box) \w+ is missing').hasMatch(reason));
 
   Future<void> _recheckCopiesWaitingForInner(String path) async {
     final name = path.split(RegExp(r'[\/]')).last;

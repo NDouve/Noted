@@ -669,7 +669,7 @@ class _Sim {
       }
     }
     if (read && _datalessNow(path) && !_justEvicted(path)) {
-      violations.add('read of a dataless file: $op ${_base(path)}');
+      violations.add('read of a dataless file: $op ${_base(path)}\n${_appFrames()}');
     }
     if (write) {
       final target = to ?? path;
@@ -1573,7 +1573,8 @@ class _Sim {
     for (final v in versions) {
       for (final x in w.channel.versionsOf(v.path)) {
         if (!x.resolved) {
-          problems.add('a version of ${_base(v.path)} is still unresolved');
+          final tr = [for (final t in trail) if (t.line.contains(_base(v.path))) t.line].join('\n  ');
+          problems.add('a version of ${_base(v.path)} is still unresolved; trail:\n  $tr');
         }
       }
     }
