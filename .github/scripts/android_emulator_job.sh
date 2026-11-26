@@ -140,7 +140,13 @@ adb logcat -c
 # A clear can leave lines logd still held (API 30 kept the check phase's start),
 # so only lines from this step's own time on are counted. The time is cut to
 # the second; the sleep only keeps this step's own start out of that second.
-since=$(adb shell date +'%m-%d %H:%M:%S.000' | tr -d '\r')
+# adb shell hands the device one command line, so the format is quoted there.
+since=$(adb shell "date +'%m-%d %H:%M:%S.000'" | tr -d '\r')
+since_ok=1
+case "$since" in
+  [0-9][0-9]-[0-9][0-9]\ [0-9][0-9]:[0-9][0-9]:[0-9][0-9].000) ;;
+  *) since_ok=0; fail "one engine: the device time '$since' is not MM-DD hh:mm:ss.000" ;;
+esac
 sleep 1
 adb shell am start -W -n "$PKG/.MainActivity"
 sleep 15
@@ -157,7 +163,7 @@ echo "NOTED_ONE_ENGINE since=$since activity_records=$records main_starts=$start
 printf '%s\n' "$start_lines" | grep NOTED_MAIN_START | sed 's/^/NOTED_ONE_ENGINE_START /' || true
 adb shell dumpsys activity activities | tr -d '\r' | grep 'ActivityRecord{' | sed 's/^/NOTED_ONE_ENGINE_RECORD /'
 adb exec-out screencap -p > "$OUT/one-engine-api$SDK.png"
-if [ "$records" -eq 1 ] && [ "$starts" -eq 1 ]; then
+if [ "$since_ok" -eq 1 ] && [ "$records" -eq 1 ] && [ "$starts" -eq 1 ]; then
   echo "NOTED_STEP_OK one-engine"
 else
   fail "one engine: $records MainActivity records and $starts NOTED_MAIN_START lines (expected 1 and 1)"
