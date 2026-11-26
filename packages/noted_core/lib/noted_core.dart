@@ -57,7 +57,9 @@ export 'src/storage/dataless.dart'
 export 'src/storage/exclusive_move.dart'
     hide
         debugMoveStrategy,
+        debugMoveVolumeOf,
         debugNoReplaceErrno,
+        debugRenameDelay,
         MoveStrategy,
         moveExclusiveUncoordinated,
         publishByRename;
@@ -72,6 +74,7 @@ export 'src/storage/exclusive_publish.dart'
         windowsPath;
 export 'src/storage/file_stamp.dart' show FileStamp, fileStamp, noFileStampsForTest;
 export 'src/storage/folder_locks.dart';
+export 'src/storage/folder_walk.dart' hide debugAppleMode;
 export 'src/storage/local_change.dart';
 export 'src/storage/page_store.dart';
 export 'src/storage/quick_xor_hash.dart';

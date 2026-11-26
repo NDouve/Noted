@@ -4,6 +4,7 @@
 
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'coordination.dart';
@@ -17,6 +18,8 @@ import 'exclusive_publish.dart'
         nonLinkPublisher,
         windowsPath;
 import 'file_stamp.dart';
+import 'folder_walk.dart';
+import 'stored_read.dart' show DownloadAsk, askSafely;
 
 /// What [moveExclusive] did.
 enum MoveOutcome {
@@ -93,11 +96,23 @@ int? debugNoReplaceErrno;
 /// [to]'s folder. A [StorageBusy], for any reason, is [MoveOutcome.busy] with
 /// nothing moved. Code that runs the move in another isolate calls
 /// [moveExclusiveUncoordinated] there, after this call's coordination.
+///
+/// Apple (see [appleMode]): a folder is never renamed while anything in it is
+/// not downloaded (a rename may make the kernel download it, or refuse). The
+/// folder is walked by name ([walk], or [folderWalk] when none is given), and on
+/// any hit [ask] is called for each such path and the answer is
+/// [MoveOutcome.busy], without an OS call. A source or a folder on another
+/// volume is [MoveOutcome.cannotRename] before the call. The rename itself then
+/// runs in another isolate, so a slow one does not block the caller; [beforeOsCall]
+/// runs in the calling isolate just before it. A file that is not downloaded is
+/// [MoveOutcome.busy] and [ask] is called for it.
 Future<MoveOutcome> moveExclusive(
   String from,
   String to, {
   void Function()? beforeOsCall,
   List<String> alsoMoved = const [],
+  DownloadAsk? ask,
+  FolderWalk? walk,
 }) async {
   try {
     return await coordinated(
@@ -106,14 +121,100 @@ Future<MoveOutcome> moveExclusive(
         for (final p in alsoMoved) CoordinationIntent(p, CoordinationKind.move),
         CoordinationIntent(folderOf(to), CoordinationKind.write),
       ]),
-      () async => moveExclusiveUncoordinated(
-        from,
-        to,
-        beforeOsCall: beforeOsCall,
-      ),
+      () async {
+        try {
+          if (appleMode() &&
+              FileSystemEntity.typeSync(from, followLinks: false) == FileSystemEntityType.directory) {
+            return await _moveFolderApple(from, to, beforeOsCall, ask, walk);
+          }
+          return moveExclusiveUncoordinated(from, to, beforeOsCall: beforeOsCall);
+        } on StorageBusy catch (e) {
+          if (e.reason == StorageBusyReason.dataless) {
+            for (final p in e.paths) {
+              askSafely(p, ask);
+            }
+          }
+          rethrow;
+        }
+      },
     );
   } on StorageBusy {
     return MoveOutcome.busy;
+  }
+}
+
+/// A test seam: the delay the folder rename of an Apple-mode move waits in its
+/// isolate before the OS call. Null in production. Not exported by
+/// `noted_core.dart`.
+Duration? debugRenameDelay;
+
+/// A test seam: the volume (`st_dev`) of a path, instead of its stamp's. Null
+/// in production. Not exported by `noted_core.dart`.
+int? Function(String path)? debugMoveVolumeOf;
+
+int? _volumeOf(String path) {
+  final f = debugMoveVolumeOf;
+  if (f != null) return f(path);
+  try {
+    return fileStamp(path)?.volume;
+  } catch (_) {
+    return null;
+  }
+}
+
+// The folder rename of Apple mode: every dataless check runs here, in the
+// calling isolate; the isolate does the rename and nothing else.
+Future<MoveOutcome> _moveFolderApple(
+  String from,
+  String to,
+  void Function()? beforeOsCall,
+  DownloadAsk? ask,
+  FolderWalk? walk,
+) async {
+  if (isDataless(from)) {
+    askSafely(from, ask);
+    return MoveOutcome.busy;
+  }
+  final w = walk ?? folderWalk(from);
+  if (w.hasNotDownloaded) {
+    for (final p in w.notDownloaded) {
+      askSafely(p, ask);
+    }
+    return MoveOutcome.busy;
+  }
+  if (Platform.isWindows) checkWindowsName(to);
+  if (_taken(to)) return MoveOutcome.targetExists;
+  final a = _volumeOf(from), b = _volumeOf(folderOf(to));
+  if (a != null && b != null && a != b) return MoveOutcome.cannotRename;
+  beforeOsCall?.call();
+  final strategy = debugMoveStrategy;
+  final errno = debugNoReplaceErrno;
+  final delay = debugRenameDelay;
+  final r = await Isolate.run(() => _renameOffIsolate(from, to, strategy, errno, delay));
+  final message = r.message;
+  if (message != null) throw FileSystemException(message, r.path);
+  return r.outcome!;
+}
+
+typedef _IsolateResult = ({MoveOutcome? outcome, String? message, String? path});
+
+// Runs in a spawned isolate: no dataless check, no coordinator. A failure comes
+// back as a value.
+_IsolateResult _renameOffIsolate(
+  String from,
+  String to,
+  MoveStrategy? strategy,
+  int? errno,
+  Duration? delay,
+) {
+  try {
+    debugMoveStrategy = strategy;
+    debugNoReplaceErrno = errno;
+    if (delay != null) sleep(delay);
+    final (outcome, _) = _moveExclusiveCode(from, to, null, null, false);
+    return (outcome: outcome, message: null, path: null);
+  } on FileSystemException catch (e) {
+    return (outcome: null, message: e.message, path: e.path);
   }
 }
 
@@ -135,10 +236,11 @@ MoveOutcome moveExclusiveUncoordinated(
   String to,
   void Function()? hook, [
   MoveStrategy? force,
+  bool checkDataless = true,
 ]) {
   // A file that is not downloaded, or a stub with no file, stays where it is:
   // never "missing".
-  _requireDownloaded(from);
+  if (checkDataless) _requireDownloaded(from);
   if (_isAbsent(from)) {
     throw FileSystemException('The source is missing', from);
   }
@@ -156,7 +258,7 @@ MoveOutcome moveExclusiveUncoordinated(
   if (code == 0) return (MoveOutcome.moved, 0);
   if (_taken(to)) return (MoveOutcome.targetExists, code);
   if (_isAbsent(from)) {
-    _requireDownloaded(from);
+    if (checkDataless) _requireDownloaded(from);
     throw FileSystemException('The source is missing', from);
   }
   if (_isNotFound(code)) {
@@ -537,7 +639,7 @@ enum PlaceholderState {
 /// no data access.
 PlaceholderState placeholderState(String path) {
   try {
-    if (Platform.isMacOS || Platform.isIOS) {
+    if (appleMode()) {
       // One dataless check (a stub counts as the file).
       if (isDataless(path)) return PlaceholderState.placeholder;
       return _isAbsent(path)
