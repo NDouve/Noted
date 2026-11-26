@@ -452,14 +452,25 @@ class RecoveryStore {
   // anything. False if something is there now. Where the volume can't do an
   // exclusive publish (no hard links) and the slot is still free, it renames,
   // as the store always did: only for files of the same form (cross-form moves
-  // call [publishExclusive] themselves).
+  // call [publishExclusive] themselves). The no-replace rename comes first
+  // (the coordinated [moveExclusive]); the check-then-rename stays only for a
+  // volume that can't rename without replacing, and a busy file rethrows.
   Future<bool> _moveToFree(File from, File to) async {
     try {
       return await publishExclusive(from, to.path);
-    } on FileSystemException {
-      if (_occupied(to)) return false;
-      await from.rename(to.path);
-      return true;
+    } on FileSystemException catch (e, st) {
+      switch (await moveExclusive(from.path, to.path)) {
+        case MoveOutcome.moved:
+          return true;
+        case MoveOutcome.targetExists:
+          return false;
+        case MoveOutcome.busy:
+          Error.throwWithStackTrace(e, st);
+        case MoveOutcome.cannotRename:
+          if (_occupied(to)) return false;
+          await from.rename(to.path);
+          return true;
+      }
     }
   }
 

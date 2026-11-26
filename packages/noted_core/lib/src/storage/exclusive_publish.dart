@@ -34,9 +34,20 @@ import 'dataless.dart' show hasStub;
 /// [beforeOsCall] runs immediately before the OS call, after any checking the
 /// implementation does; it is a seam for tests.
 ///
-/// Windows: `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING`, on `\\?\` paths
-/// so long paths work. Linux, macOS, iOS, Android: `link(tmp, target)` (fails
-/// with EEXIST), then `unlink(tmp)`.
+/// - **Windows**: `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING`, on `\\?\`
+///   paths so long paths work.
+/// - **Linux, macOS, iOS**, and **Android where `link` works**: `link(tmp,
+///   target)` (fails with EEXIST), then `unlink(tmp)`.
+/// - **Android with `link` refused (EACCES, EPERM), API 30 and up**:
+///   `renameat2(RENAME_NOREPLACE)`. The kernel decides atomically; EEXIST is
+///   false.
+/// - **Android with `link` refused, API 26 to 29** (no `renameat2`, and the raw
+///   syscall may be killed by seccomp), **or `renameat2` returning ENOSYS or
+///   EINVAL**: an lstat, then `rename(2)`, in the same synchronous call (no
+///   `await` between them). Noted is then the only writer in its private
+///   storage, and the check and the rename run in its only writing isolate.
+/// - **Android with no publisher registered** (see [nonLinkPublisher]): `link`,
+///   which throws.
 ///
 /// Under a registered coordinator (`coordination.dart`) the call runs inside
 /// it, naming the folders as writes and [tmp] as a move; a [StorageBusy] means
@@ -59,6 +70,29 @@ Future<bool> publishExclusive(
   );
 }
 
+/// Android's publisher, registered once at start by `useRenamePublishOnAndroid`
+/// (`exclusive_move.dart`, which is outside the MCP server's import graph).
+/// `(tmp, target, beforeOsCall)` gives true when published and false when
+/// something is at the target, and throws a [FileSystemException] otherwise.
+/// With none registered, Android uses its own `link` as every POSIX system
+/// does: it fails safe (throws) and never replaces. Not exported by the
+/// package's libraries.
+bool Function(String from, String to, void Function()? beforeOsCall)?
+nonLinkPublisher;
+
+/// A test seam: makes every `link` call of the publish fail with this errno
+/// without calling. Null in production. Not exported by the package's libraries.
+int? debugLinkErrno;
+
+/// A test seam: how many times the publish tried `link` (a forced failure
+/// counts). Not exported by the package's libraries.
+int debugLinkCalls = 0;
+
+/// A test seam: true takes the Android branch on any platform, false never
+/// does. Null in production (the platform decides). Not exported by the
+/// package's libraries.
+bool? debugPublishAsAndroid;
+
 /// [publishExclusive] without the coordination hook, for the primitives that
 /// are already inside their one coordinated call. Not exported by the
 /// package's libraries.
@@ -79,7 +113,12 @@ bool _publishExclusiveSync(
   if (hasStub(target)) return false;
   final bool ok;
   try {
-    if (Platform.isWindows) {
+    if (debugPublishAsAndroid ?? Platform.isAndroid) {
+      final publisher = nonLinkPublisher;
+      ok = publisher != null
+          ? publisher(from, target, beforeOsCall)
+          : _linkPosix(from, target, beforeOsCall);
+    } else if (Platform.isWindows) {
       checkWindowsName(target);
       ok = _moveWindows(windowsPath(from), windowsPath(target), beforeOsCall);
     } else if (Platform.isLinux ||
@@ -157,6 +196,11 @@ typedef _FreeVC = Void Function(Pointer<Void>);
 typedef _FreeVD = void Function(Pointer<Void>);
 
 bool _linkPosix(String from, String to, void Function()? hook) {
+  if (debugLinkErrno != null) {
+    hook?.call();
+    debugLinkCalls++;
+    return false;
+  }
   final libc = DynamicLibrary.process();
   final link = libc.lookupFunction<_Link2C, _Link2D>('link');
   final unlink = libc.lookupFunction<_UnlinkC, _UnlinkD>('unlink');
@@ -166,6 +210,7 @@ bool _linkPosix(String from, String to, void Function()? hook) {
   final b = _cString(malloc, to);
   try {
     hook?.call();
+    debugLinkCalls++;
     if (link(a, b) != 0) return false;
     // The target now exists with the full content; drop the temp name. If
     // this fails twice the page is still safely published, so don't report an

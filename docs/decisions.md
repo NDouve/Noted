@@ -1782,7 +1782,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0127 — Build tooling outside this repository; exclusive publishing; recovery, AI-code and formula fixes
 - **Date:** 2026-11-02
-- **Status:** Active (approved by the maintainer; amends 0120, 0124, 0125 and 0126); the hash-named kept file rule amended by 0172; the move primitive amended by 0186
+- **Status:** Active (approved by the maintainer; amends 0120, 0124, 0125 and 0126); the hash-named kept file rule amended by 0172; the move primitive amended by 0186; exclusive publishing on Android amended by 0193
 - **Decision:**
   - **Repository:** the build tooling (agent definitions, run and review history, the review and cleanup scripts and the reviewers' instructions) lives in a separate private repository. This repository holds the app, its spec and its CI. The cleanup script's tests no longer run in this repository's CI.
   - **Exclusive publishing (noted_core):** `publishExclusive` moves a written temporary file to its target only if nothing is there at that moment, with no gap between a check and the move: on Windows a move that doesn't replace, elsewhere a hard link followed by removing the temporary name. It never falls back to replacing; a volume without hard links is an error. On Windows the long-path prefix is added only from 260 characters, and a name Windows would change (a trailing dot or space, a device name) is refused. `PageStore.saveNew` saves a page this way.
@@ -2711,6 +2711,17 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - **Known limit:** one CI failure of that test (a daemon replace found in no file after a crash) is not explained. It didn't reproduce in about 750 seeded runs; the next failure names its cause.
 - **Rationale:** tests failed on Windows CI when a folder was deleted while its notebook was still reading, and fixing each test separately kept moving the failure; a snapshot that a real crash can't produce hides or invents losses.
 - **Alternatives considered:** per-test waits (the earlier approach); retrying the delete without settling (hides work still writing into the folder).
+
+## 0193 — Exclusive publishing on Android, where apps can't make hard links
+- **Date:** 2026-11-25
+- **Status:** Active (the build team (PM), run 2026-11-25-01); amends 0127's exclusive publishing and 0186's move primitive
+- **Decision:**
+  - **Android (amends 0127):** Android's SELinux policy refuses `link` to apps (EACCES), also in the app's own storage. On Android the app registers a publisher at start (`useRenamePublishOnAndroid`, before device storage and the recovery lock). It tries `link` first; on EACCES or EPERM it moves the temp with `renameat2(RENAME_NOREPLACE)` where bionic provides it (API 30 and up); where that call is missing or answers ENOSYS or EINVAL, it checks the target with `lstat` and renames in one synchronous call. Any other error is reported with its errno. It never replaces and never falls back to replacing. Windows, Linux, macOS and iOS keep 0127's rule, and a volume without hard links is still an error there.
+  - **Why the check-then-rename is allowed only there:** in Android's private storage Noted is the only writer. Every write runs in the app's main isolate, so nothing runs between the check and the rename; the recovery lock refuses a second process; the MCP server doesn't run on Android; and `MainActivity` finishes a second instance before its Dart code runs, so one process has one engine. Sync on Android is the app's own pull.
+  - **Recovery:** `_moveToFree` moves with the no-replace rename and keeps its check-then-rename only for a volume that refuses that rename, so desktop recovery folders on such volumes keep working.
+  - **Tests and CI:** every publish site is tested with `link` forced to fail; the reload-equivalence test runs seeds with the Android publisher; an `android-emulator` CI job (API 34, 30 and 26) installs the debug build fresh, saves a page, force-stops, relaunches and checks the text, and records the `link` errno and the first-launch screen.
+- **Rationale:** with `link` refused, every save on Android threw, so the first page couldn't be created and the first launch never finished. The no-replace rename keeps 0127's guarantee where the kernel has it; below API 30 the single-writer argument covers the remaining window.
+- **Alternatives considered:** a replacing rename (can overwrite); a copy and delete (not atomic, and deletes a name); refusing to save on Android (the app wouldn't start); taking a file lock around each publish (Noted is already the only writer there).
 
 ---
 

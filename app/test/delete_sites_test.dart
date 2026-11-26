@@ -262,8 +262,6 @@ const List<Site> deleteSites = [
 const String _ownTemp =
     'a unique or fixed own temporary file renamed over an app-private file';
 const String _rename = 'not a file operation: a rename of a page or a command';
-const String _move =
-    'a folder or file move onto a free name; the primitives that rename aside are checked';
 
 final List<Site> renameSites = [
   for (final call in [
@@ -275,7 +273,7 @@ final List<Site> renameSites = [
       'packages/noted_core/lib/src/storage/exclusive_move.dart',
       call,
       1,
-      'the Android fallback below API 30, after an lstat that found no target, under the folder locks',
+      "Android after a refused link, without renameat2 or where it can't rename: the rename runs in the same synchronous call as an lstat that found no target, in Noted's only writing isolate",
     ),
   (
     'app/lib/src/ai/ai_link_server.dart',
@@ -328,7 +326,12 @@ final List<Site> renameSites = [
     _rename,
   ),
   ('app/lib/src/recovery_store.dart', 'await tmp.rename(f.path);', 1, _ownTemp),
-  ('app/lib/src/recovery_store.dart', 'await from.rename(to.path);', 1, _move),
+  (
+    'app/lib/src/recovery_store.dart',
+    'await from.rename(to.path);',
+    1,
+    "a desktop volume that can't rename without replacing, after an occupancy check",
+  ),
   (
     'app/lib/src/recovery_store.dart',
     'await f.rename(target.path);',

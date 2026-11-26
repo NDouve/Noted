@@ -51,9 +51,21 @@ export 'src/storage/dataless.dart'
         debugResetDataless,
         sfDataless;
 export 'src/storage/exclusive_move.dart'
-    hide debugMoveStrategy, MoveStrategy, moveExclusiveUncoordinated;
+    hide
+        debugMoveStrategy,
+        debugNoReplaceErrno,
+        MoveStrategy,
+        moveExclusiveUncoordinated,
+        publishByRename;
 export 'src/storage/exclusive_publish.dart'
-    hide checkWindowsName, publishExclusiveUncoordinated, windowsPath;
+    hide
+        checkWindowsName,
+        debugLinkCalls,
+        debugLinkErrno,
+        debugPublishAsAndroid,
+        nonLinkPublisher,
+        publishExclusiveUncoordinated,
+        windowsPath;
 export 'src/storage/file_stamp.dart' show FileStamp, fileStamp, noFileStampsForTest;
 export 'src/storage/folder_locks.dart';
 export 'src/storage/local_change.dart';
