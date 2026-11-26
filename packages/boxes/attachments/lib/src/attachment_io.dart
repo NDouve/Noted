@@ -139,7 +139,11 @@ bool attachmentNameInvalid(AttachmentRef ref) {
 bool attachmentMissing(AttachmentRef ref, AttachmentStore? store) {
   if (ref.isEmbedded || ref.isDamaged) return false;
   final file = ref.file;
-  return file == null || store == null || !isAttachmentFileName(file) || !store.exists(file);
+  return file == null ||
+      store == null ||
+      !isAttachmentFileName(file) ||
+      !store.exists(file) ||
+      downloadOf(ref, store) != AttachmentDownload.onDevice;
 }
 
 /// [ref] kept the [to] way, or null if it stays as it is: already that way,
@@ -200,21 +204,109 @@ Future<AttachmentRef?> convertAttachment(
   }
 }
 
-/// Shown in place of a file that hasn't arrived: "Still syncing". It fills
-/// in by itself once the file is there (the box listens to
-/// [AttachmentStore.changes]).
-class StillSyncing extends StatelessWidget {
-  const StillSyncing({super.key, required this.name});
+/// What [store] says of the download of [ref]'s folder file: not onDevice when
+/// the file is only a cloud placeholder (see [DownloadingAttachmentStore]). A
+/// plain store, an embedded file or a bad name is [AttachmentDownload.onDevice].
+AttachmentDownload downloadOf(AttachmentRef ref, AttachmentStore? store) {
+  final file = ref.file;
+  if (store is! DownloadingAttachmentStore || ref.isEmbedded || file == null || !isAttachmentFileName(file)) {
+    return AttachmentDownload.onDevice;
+  }
+  return store.download(file);
+}
 
-  final String name;
+/// Shown when a file that is not downloaded yet is opened.
+const String downloadingOpenNotice = "This file is still downloading. Open it again once it's here.";
+
+/// Shown when a file that is not downloaded yet is pasted onto a page.
+const String downloadingPasteNotice = 'This file is still downloading. Try again in a moment.';
+
+/// [storeIncoming], or null (with a notice) when the page already holds the
+/// file under its name and that copy is not downloaded yet: nothing is stored.
+Future<AttachmentRef?> storeIncomingOrNotify(IncomingFile file, AttachmentStore store) async {
+  try {
+    return await storeIncoming(file, store);
+  } on StorageBusy catch (e) {
+    if (e.reason != StorageBusyReason.dataless) rethrow;
+    store.notify(downloadingPasteNotice);
+    return null;
+  }
+}
+
+/// The label of the download state: "Downloading…" or "Can't download", and
+/// null for [AttachmentDownload.onDevice].
+String? downloadLabel(AttachmentDownload d) => switch (d) {
+  AttachmentDownload.onDevice => null,
+  AttachmentDownload.downloading => 'Downloading…',
+  AttachmentDownload.failed => "Can't download",
+};
+
+/// The "Retry" button of a file that is not downloaded: asks for it again.
+class DownloadRetry extends StatelessWidget {
+  const DownloadRetry({super.key, required this.store, required this.fileName});
+
+  final DownloadingAttachmentStore store;
+  final String fileName;
 
   @override
   Widget build(BuildContext context) {
+    final m = NotedMetrics.of(context);
+    return TextButton(
+      key: const ValueKey('download-retry'),
+      style: TextButton.styleFrom(
+        padding: EdgeInsets.symmetric(horizontal: m.space2),
+        minimumSize: Size.zero,
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      ),
+      onPressed: () => store.retryDownload(fileName),
+      child: const Text('Retry'),
+    );
+  }
+}
+
+/// Shown in place of a file that hasn't arrived: "Still syncing". It fills
+/// in by itself once the file is there (the box listens to
+/// [AttachmentStore.changes]). With a [DownloadingAttachmentStore] and the
+/// file's [fileName], a file that is only a placeholder shows "Downloading…",
+/// or "Can't download" (the message as its tooltip), each with "Retry".
+class StillSyncing extends StatelessWidget {
+  const StillSyncing({super.key, required this.name, this.store, this.fileName});
+
+  final String name;
+  final AttachmentStore? store;
+  final String? fileName;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = store, f = fileName;
+    if (s is DownloadingAttachmentStore && f != null) {
+      return ListenableBuilder(listenable: s.changes, builder: (c, _) => _content(c, s, f));
+    }
+    return _content(context, null, null);
+  }
+
+  Widget _content(BuildContext context, DownloadingAttachmentStore? s, String? f) {
     final scheme = Theme.of(context).colorScheme;
     final m = NotedMetrics.of(context);
     final type = NotedTypography.of(context);
+    final state = s != null && f != null ? s.download(f) : AttachmentDownload.onDevice;
+    final label = downloadLabel(state);
+    Widget text = Text(
+      label ?? 'Still syncing',
+      key: ValueKey(switch (state) {
+        AttachmentDownload.onDevice => 'still-syncing',
+        AttachmentDownload.downloading => 'still-downloading',
+        AttachmentDownload.failed => 'download-failed',
+      }),
+      overflow: TextOverflow.ellipsis,
+      style: type.small.copyWith(color: scheme.onSurfaceVariant),
+    );
+    if (state == AttachmentDownload.failed && f != null) {
+      final why = s?.downloadError(f);
+      if (why != null && why.isNotEmpty) text = Tooltip(message: why, child: text);
+    }
     return Semantics(
-      label: 'Still syncing: $name',
+      label: '${label ?? 'Still syncing'}: $name',
       child: Center(
         child: Padding(
           padding: EdgeInsets.all(m.space2),
@@ -227,14 +319,11 @@ class StillSyncing extends StatelessWidget {
                 color: scheme.onSurfaceVariant,
               ),
               SizedBox(width: m.space2),
-              Flexible(
-                child: Text(
-                  'Still syncing',
-                  key: const ValueKey('still-syncing'),
-                  overflow: TextOverflow.ellipsis,
-                  style: type.small.copyWith(color: scheme.onSurfaceVariant),
-                ),
-              ),
+              Flexible(child: text),
+              if (state != AttachmentDownload.onDevice && s != null && f != null) ...[
+                SizedBox(width: m.space2),
+                DownloadRetry(store: s, fileName: f),
+              ],
             ],
           ),
         ),

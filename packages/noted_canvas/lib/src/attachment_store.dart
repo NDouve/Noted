@@ -171,3 +171,34 @@ abstract interface class PageFolderAttachmentStore implements VerifyingAttachmen
   /// a copy in a recovery folder is never looked at.
   Future<VerifiedAttachment> verifyInPageFolder(String fileName, {required int size});
 }
+
+/// Whether a folder file that is not here yet has been asked for (Box API 0.17).
+enum AttachmentDownload {
+  /// The file is on this device, or nothing is known to hold it back.
+  onDevice,
+
+  /// The file is not on this device (a cloud placeholder) and its download was
+  /// asked for.
+  downloading,
+
+  /// The system refused the request; [DownloadingAttachmentStore.downloadError]
+  /// has its message.
+  failed,
+}
+
+/// An [AttachmentStore] that asks the system to download a folder file that is
+/// only a cloud placeholder, and says where that stands (Box API 0.17).
+/// Optional: modules use it when the store has it, and a plain store keeps
+/// "Still syncing". [AttachmentState] gets no new value for it.
+abstract interface class DownloadingAttachmentStore implements AttachmentStore {
+  /// The state of the folder file [fileName]. Cached, never starts a read, and
+  /// never notifies synchronously; [AttachmentStore.changes] notifies when it
+  /// changes.
+  AttachmentDownload download(String fileName);
+
+  /// The platform's message when [download] is [AttachmentDownload.failed].
+  String? downloadError(String fileName);
+
+  /// Asks for the file again, at once.
+  void retryDownload(String fileName);
+}

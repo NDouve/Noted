@@ -41,15 +41,18 @@ import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/main.dart' show buildModules;
 import 'package:noted/src/app_settings.dart';
+import 'package:noted/src/attachment_copy.dart' show attachmentBeforePublishHook;
 import 'package:noted/src/icloud_folders.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
 import 'package:noted_core/src/storage/dataless.dart' show debugDatalessKey, debugDatalessPaths, debugMarkDataless, debugUnmarkDataless;
+import 'package:noted_core/src/storage/folder_walk.dart' show debugAppleMode;
 
 // The server's closed writer, as the other reload-equivalence tests use it
 // (they run the whole server in a child process; this is its page writer).
@@ -82,6 +85,13 @@ const List<String> _killKinds = [
   'server:beforeAsideDelete',
   'landing:equal', // a version equal to the file, not yet resolved
   'landing:reread', // resolved, the holder not yet read again
+];
+
+/// t2a: kill points inside a template save and an attachment copy, run as pinned
+/// scenarios (adding them to [_killKinds] would shift the kill each seed gets).
+const List<String> _t2aKillKinds = [
+  'template:saveTemplate', // a template's assets are copied, its file is not published
+  'attachment:copy', // a file of an attachment copy is made, not published
 ];
 
 /// What each kill kind needs to happen at least once in a sequence.
@@ -732,6 +742,8 @@ class _Sim {
     pageIds.add(nb.currentId!);
     _checkTrail();
     await nb.flush();
+    // t2a: a file in the assets folder of the first page.
+    plantAsset(nb.currentId!);
   }
 
   // Since the coordinator was put in place, the channel got one `coordinate`
@@ -791,6 +803,14 @@ class _Sim {
       storeFactory: (d) => _Store(d, this),
     );
     w.notebooks.add(n);
+    // t2a: kill points inside a template save and an attachment copy.
+    n.templateStepHook = (step) async => point('template:$step');
+    attachmentBeforePublishHook = (target) async => point('attachment:copy');
+    // 0150: a stray folder the app declines to move says so (once); that is its answer.
+    n.attachmentNotices.listen((m) {
+      final d = RegExp(r'of "(.*)" stayed in (.*): a file there may still be the page').firstMatch(m);
+      if (d != null) declinedAt.add((title: d.group(1)!, place: _norm(d.group(2)!)));
+    });
     return n;
   }
 
@@ -807,6 +827,8 @@ class _Sim {
     nb = _notebook(f);
     channelHooks();
     _launched = true;
+    _resyncAssets();
+    _templateFolders = {}; // the restore may have taken a foreign folder with it
     await nb.load();
     await nb.discoveryIdle;
   }
@@ -945,7 +967,10 @@ class _Sim {
       if (e is File && _holds(e, marker)) _base(e.path),
   ];
 
+  bool _isAsset(String path) => _norm(path).contains('.assets/');
+
   bool _holds(File e, String marker) {
+    if (_isAsset(e.path)) return false;
     try {
       return latin1.decode(e.readAsBytesSync()).contains(marker);
     } on FileSystemException {
@@ -960,6 +985,8 @@ class _Sim {
     final texts = StringBuffer();
     for (final e in w.root.listSync(recursive: true, followLinks: false)) {
       if (e is! File) continue;
+      // Attachments hold no marker (and one that is not downloaded is not read).
+      if (_isAsset(e.path)) continue;
       // A leftover or a temp is not where a version is kept.
       final name = _base(e.path);
       if (name.endsWith(asideSuffix) ||
@@ -1026,6 +1053,7 @@ class _Sim {
       case 'appCreate':
         final id = await nb.createPage();
         if (quiet) pageIds.add(id);
+        if (quiet && arnd.nextBool()) plantAsset(id);
       case 'daemonEdit':
         await daemonEdit();
       case 'daemonConflict':
@@ -1058,6 +1086,16 @@ class _Sim {
         await launch();
       case 'serverWrite':
         await serverWrite();
+      case 'daemonEvictAttachment':
+        await daemonEvictAttachment();
+      case 'appPaste':
+        await appPaste();
+      case 'appMove':
+        await appMove();
+      case 'appTemplate':
+        await appTemplate();
+      case 'daemonForeignAssets':
+        daemonForeignAssets();
     }
     await pause();
   }
@@ -1091,6 +1129,7 @@ class _Sim {
       log.add('=> files ${files.join(' ')} | rows ${rows.join(' ')}');
     }
     if (!quiet) return;
+    untraced(auditTemplates);
     final now = untraced(() => {for (final m in durable.keys) m: where(m)});
     // A marker can be between files for a moment: the app's save has moved the
     // page aside and not published yet. Only one that stays out of every file
@@ -1275,6 +1314,492 @@ class _Sim {
     evictedText[file.path] = text;
     evictExcuse.add(_norm(file.path));
     if (rnd.nextBool()) await w.channel.emit('changed', {'path': file.path});
+  }
+
+  // -- t2a: attachments that are not downloaded -------------------------------------
+
+  // The files the daemon planted in `<id>.assets`, by `<page id>|<name>`.
+  final Map<String, Uint8List> assets = {};
+  // The copies evicted through the dataless seam (the file stays), by path, with their key.
+  final Map<String, String> seamedAssets = {};
+  // The copies evicted to a stub, by the path of the file.
+  final Set<String> stubbedAssets = {};
+  // The paths the app asked the platform to download, from the first request.
+  final Set<String> askedAssets = {};
+  // Template ids this sequence's saves made (their assets folders may be removed
+  // by the save's own rollback).
+  final Set<String> madeTemplates = {};
+  // The files each template of this sequence had at its save: template id -> page and files.
+  final Map<String, ({String page, Map<String, Uint8List> files})> savedTemplates = {};
+  // The titles of the pages whose stray folder the app said it left where it was (0150).
+  final List<({String title, String place})> declinedAt = [];
+
+  // Whether the app said, for page [id] by its title, that it left the folder where it was.
+  // The app names a stray folder's page by its title and its place, once for each folder.
+  // Page [id]'s stray in [folder] counts as declined when the app said so at least once
+  // for each page of that title that has a stray there.
+  bool _declinedFor(String id, String folder) {
+    String titleOf(String p) {
+      final t = (nb.pageTitleOf(p) ?? '').trim();
+      return t.isEmpty ? 'Untitled' : t;
+    }
+
+    final title = titleOf(id);
+    final place = folder == drivePath ? 'pages' : _norm(subDir.path);
+    bool strayIn(String p) => Directory('$folder/$p.assets').existsSync();
+    final strays = [for (final p in pageIds) if (titleOf(p) == title && strayIn(p)) p];
+    final said = declinedAt.where((d) => d.title == title && _norm(d.place) == place).length;
+    return said > 0 && said >= strays.length;
+  }
+  // The attachments' own random numbers and counter, so the other ops draw what they always drew.
+  late final Random arnd = Random(seed * 104729 + 7);
+  int _assetN = 0;
+  // Template assets folders seen at an earlier step, to find one that went while its
+  // template file was absent.
+  Set<String> _templateFolders = {};
+
+  Directory get subDir => Directory('$drivePath/Sub');
+  List<String> get _locs => [drivePath, subDir.path];
+
+  /// Where page [id]'s file is (or its stub), or null.
+  String? pageLoc(String id) {
+    for (final loc in _locs) {
+      final p = '$loc/$id.canvas';
+      if (File(p).existsSync() || File(_stubOf(p)).existsSync()) return loc;
+    }
+    return null;
+  }
+
+  String _assetPathIn(String loc, String key) {
+    final cut = key.indexOf('|');
+    return '$loc/${key.substring(0, cut)}.assets/${key.substring(cut + 1)}';
+  }
+
+  /// Every copy of a planted file that is not downloaded now, by path: the file is
+  /// gone and its stub stands, or the seam marks it. A page that moved while one
+  /// was evicted has the evicted copy at its old place (a stray) and may have
+  /// another at its new one (a paste).
+  Map<String, String> get evictedPaths => {
+    for (final k in assets.keys)
+      for (final loc in _locs)
+        if (_isEvictedAt(_assetPathIn(loc, k))) _assetPathIn(loc, k): k,
+  };
+
+  bool _isEvictedAt(String path) {
+    final there = FileSystemEntity.typeSync(path, followLinks: false) != FileSystemEntityType.notFound;
+    if (!there) return File(_stubOf(path)).existsSync();
+    return seamedAssets.containsKey(path);
+  }
+
+  /// The daemon puts a file in the assets folder of page [id].
+  void plantAsset(String id) {
+    final n = ++_assetN;
+    final bytes = Uint8List.fromList(List.generate(48, (i) => (seed * 31 + n * 17 + i * 5) % 251));
+    final name = '${contentHash(bytes)}.bin';
+    final path = _assetPathIn(pageLoc(id) ?? drivePath, '$id|$name');
+    retrySync(() {
+      File(path).parent.createSync(recursive: true);
+      File(path).writeAsBytesSync(bytes);
+    });
+    assets['$id|$name'] = bytes;
+  }
+
+  void _forgetSeamedAssets() {
+    for (final p in seamedAssets.keys) {
+      debugUnmarkDataless(p);
+    }
+    seamedAssets.clear();
+    stubbedAssets.clear();
+  }
+
+  /// After a crash and a restore: what the files say is what there is.
+  void _resyncAssets() {
+    _forgetSeamedAssets();
+    assets.removeWhere((k, _) => !_locs.any((loc) {
+      final p = _assetPathIn(loc, k);
+      return File(p).existsSync() || File(_stubOf(p)).existsSync();
+    }));
+    for (final p in evictedPaths.keys) {
+      stubbedAssets.add(p);
+    }
+  }
+
+  /// Notes what the platform was asked to download.
+  void noteAsked() {
+    for (final c in w.channel.callsOf('startDownloading')) {
+      askedAssets.add(_norm('${c.args['path']}'));
+    }
+  }
+
+  /// The fake daemon evicts a copy of a planted file: it goes and its stub stands,
+  /// or the seam marks it. Then `isDataless` must say so (a path spelling that the
+  /// seam does not match would hide a read from every check).
+  Future<void> daemonEvictAttachment() async {
+    final paths = [
+      for (final k in assets.keys)
+        for (final loc in _locs)
+          if (File(_assetPathIn(loc, k)).existsSync() && !_isEvictedAt(_assetPathIn(loc, k))) _assetPathIn(loc, k),
+    ]..sort();
+    if (paths.isEmpty) return;
+    final path = paths[arnd.nextInt(paths.length)];
+    final key = assets.keys.firstWhere((k) => _locs.any((loc) => _assetPathIn(loc, k) == path));
+    if (arnd.nextBool()) {
+      retrySync(() {
+        File(path).deleteSync();
+        File(_stubOf(path)).writeAsStringSync('');
+      });
+      stubbedAssets.add(path);
+    } else {
+      debugMarkDataless(path);
+      seamedAssets[path] = key;
+    }
+    if (!isDataless(path)) {
+      violations.add('the evicted attachment is not dataless to the app: ${_base(path)}');
+    }
+    if (arnd.nextBool()) await w.channel.emit('changed', {'path': File(_stubOf(path)).existsSync() ? _stubOf(path) : path});
+  }
+
+  /// The fake daemon downloads the copy at [path]: only one the app asked for.
+  Future<bool> daemonMaterializeAttachment(String path, String key) async {
+    noteAsked();
+    if (!askedAssets.contains(_norm(path))) return false;
+    final bytes = assets[key]!;
+    if (seamedAssets.remove(path) != null) {
+      debugUnmarkDataless(path);
+    } else {
+      retrySync(() {
+        File(path).writeAsBytesSync(bytes);
+        final stub = File(_stubOf(path));
+        if (stub.existsSync()) stub.deleteSync();
+      });
+      stubbedAssets.remove(path);
+    }
+    await w.channel.emit('changed', {'path': path});
+    return true;
+  }
+
+  /// The app pastes the bytes of an evicted file onto its page: nothing is
+  /// written in its place (no `.kept-` copy, no recovery copy).
+  Future<void> appPaste() async {
+    final evicted = evictedPaths.values.toSet().toList()..sort();
+    if (evicted.isEmpty) return;
+    final key = evicted[arnd.nextInt(evicted.length)];
+    final id = key.substring(0, key.indexOf('|'));
+    try {
+      await nb.open(id);
+    } on Object {
+      return;
+    }
+    final store = nb.attachments;
+    if (store == null || nb.currentId != id) return;
+    try {
+      await store.put(assets[key]!, extension: 'bin');
+    } on StorageBusy {
+      // Expected: the file is on its way.
+    } on FileSystemException {
+      // A locked or vanished folder; checked by the end checks.
+    }
+  }
+
+  /// A page moves between the drive's two folders, with its images and files.
+  Future<void> appMove() async {
+    // The drive's second folder, and a page in it, are made at the first move.
+    try {
+      subDir.createSync();
+      await nb.addStandaloneFolder(subDir.path);
+      if (quiet && !pageIds.any((id) => pageLoc(id) == subDir.path)) {
+        final sub = await nb.createPage(folderPath: subDir.path);
+        await nb.flush();
+        // A kill planned while it was made means the page may not survive the crash.
+        if (quiet) {
+          pageIds.add(sub);
+          plantAsset(sub);
+        }
+      }
+    } on Object catch (e) {
+      log.add('no second folder: $e');
+      return;
+    }
+    // The page that stays in the second folder is never moved: a page moving in has a parent there.
+    final anchor = pageIds.where((id) => pageLoc(id) == subDir.path).toList()..sort();
+    if (anchor.isEmpty) return;
+    // A page that has an edit waiting in recovery stays where it is: the harness is about
+    // attachments, and a kept edit moves with its page by rules of its own (R5).
+    final waiting = {for (final e in (await nb.recoveryStoreForTest!.list()).entries) e.pageId};
+    final movable = [
+      for (final id in pageIds)
+        if (id != anchor.first &&
+            !waiting.contains(id) &&
+            pageLoc(id) != null &&
+            !_hasFilesBeside(id) &&
+            nb.tree.descendantsOf(id).isEmpty)
+          id,
+    ]..sort();
+    if (movable.isEmpty) return;
+    // A page with an evicted file is the one to move, when there is one.
+    final withEvicted = [
+      for (final id in movable)
+        if (evictedPaths.values.any((k) => k.startsWith('$id|'))) id,
+    ];
+    final pool = withEvicted.isNotEmpty ? withEvicted : movable;
+    final id = pool[arnd.nextInt(pool.length)];
+    final from = pageLoc(id);
+    final parents = [
+      anchor.first,
+      for (final o in movable)
+        if (o != id && pageLoc(o) != from && !nb.tree.descendantsOf(id).contains(o)) o,
+    ].where((p) => pageLoc(p) != from).toList();
+    if (parents.isEmpty) return;
+    final parent = parents[arnd.nextInt(parents.length)];
+    // Apple's rules: a folder with something not downloaded in it is never renamed.
+    // They stay on for the rest of the sequence: the stray mover of the settle moves
+    // what a move left behind under the same rules (cleared in [dispose]).
+    debugAppleMode = true;
+    try {
+      await nb.move(id, parentId: parent);
+    } on NotebookException {
+      // A file stayed behind (still downloading), or the move was refused.
+    } on FileSystemException {
+      // A busy folder.
+    }
+    // A folder rename over an evicted file would have taken it along: an evicted copy
+    // that was evicted before the move is where it was.
+    for (final p in [...seamedAssets.keys, ...stubbedAssets]) {
+      if (!File(p).existsSync() && !File(_stubOf(p)).existsSync()) {
+        violations.add('an evicted attachment is gone from ${_base(File(p).parent.path)} after a move (renamed with its folder?)');
+      }
+    }
+  }
+
+  // Whether the folder of page [id] holds a copy, version, leftover or stub of its file:
+  // those stay behind when a page moves (a rule of the moves, not of the attachments).
+  bool _hasFilesBeside(String id) {
+    final loc = pageLoc(id);
+    if (loc == null) return false;
+    for (final e in Directory(loc).listSync(followLinks: false)) {
+      final n = _base(e.path);
+      if (e is Directory || n.endsWith('.assets')) continue;
+      if (n.toLowerCase().contains(id.toLowerCase()) && n != '$id.canvas') return true;
+    }
+    return false;
+  }
+
+  /// Another device's template assets arrive before their template file, with old times.
+  void daemonForeignAssets() {
+    final id = 'f$seed${++_assetN}';
+    final bytes = Uint8List.fromList([seed, _assetN, 7]);
+    final file = File('${_templatesDir.path}/$id.assets/p/${contentHash(bytes)}.bin');
+    retrySync(() {
+      file.parent.createSync(recursive: true);
+      file.writeAsBytesSync(bytes);
+      file.setLastModifiedSync(DateTime(2001));
+    });
+  }
+
+  /// A page is saved as a template, with its images and files.
+  Future<void> appTemplate() async {
+    final ids = pageIds.where((id) => pageLoc(id) != null).toList()..sort();
+    if (ids.isEmpty) return;
+    final withFiles = [for (final id in ids) if (assets.keys.any((k) => k.startsWith('$id|'))) id];
+    final pool = withFiles.isNotEmpty ? withFiles : ids;
+    final id = pool[arnd.nextInt(pool.length)];
+    try {
+      // A sweeping listing first: another device's assets, with old times and no template
+      // file yet, must come through it (and stay).
+      await nb.listTemplates(TemplateKind.page);
+      final t = await nb.savePageAsTemplate(id, name: 'T$id');
+      madeTemplates.add(t.id);
+      // What the page had when the save returned: every one of these is in its copy.
+      savedTemplates[t.id] = (
+        page: id,
+        files: {
+          for (final e in assets.entries)
+            if (e.key.startsWith('$id|') && File(_assetPathIn(pageLoc(id) ?? drivePath, e.key)).existsSync())
+              e.key.substring(e.key.indexOf('|') + 1): e.value,
+        },
+      );
+    } on NotebookException {
+      // Refused: a file is still downloading.
+    } on FileSystemException {
+      // A busy folder.
+    }
+  }
+
+  Directory get _templatesDir => Directory('${w.root.path}/app/templates');
+
+  /// The template assets folders that exist, with whether their template file does.
+  Map<String, bool> _templateAssetFolders() {
+    final d = _templatesDir;
+    if (!d.existsSync()) return {};
+    return {
+      for (final e in d.listSync(followLinks: false))
+        if (e is Directory && _base(e.path).endsWith('.assets'))
+          _base(e.path).replaceAll('.assets', ''): File('${d.path}/${_base(e.path).replaceAll('.assets', '')}.notedtemplate').existsSync(),
+    };
+  }
+
+  /// No template assets folder that this sequence did not make goes while its
+  /// template file is absent (another device's assets may come before its file).
+  void auditTemplates() {
+    final now = _templateAssetFolders();
+    for (final id in _templateFolders) {
+      if (now.containsKey(id) || madeTemplates.contains(id)) continue;
+      if (!File('${_templatesDir.path}/$id.notedtemplate').existsSync()) {
+        violations.add('template assets $id.assets went while its template file was absent');
+      }
+    }
+    _templateFolders = now.keys.toSet();
+  }
+
+  // Whether a file in [loc] counts as page [id] by 0150's rule: its name carries the id
+  // (a conflict copy, a leftover, a stub).
+  bool _mayStillBePage(String loc, String id) {
+    final here = _norm(loc);
+    // A file the app could not read in the folder: anything uncertain counts.
+    if (nb.unreadable.any((u) => _norm(File(u.path).parent.path) == here)) return true;
+    for (final e in Directory(loc).listSync(followLinks: false)) {
+      final n = _base(e.path).toLowerCase();
+      if (n.endsWith('.assets') || e is Directory) continue;
+      if (n.contains(id.toLowerCase())) return true;
+      // A page file that is not one of the sequence's (or only a stub): it may be
+      // the page, restored by sync under another name.
+      if (n.endsWith('.canvas') && !pageIds.contains(n.substring(0, n.length - '.canvas'.length))) return true;
+      if (n.endsWith('.icloud')) return true;
+    }
+    return false;
+  }
+
+  /// The end checks of the attachments: whole at their page's location, nothing
+  /// kept beside them, nothing in recovery, no template with partial assets, and
+  /// no evicted file left unasked.
+  Future<List<String>> attachmentProblems() async {
+    final out = <String>[];
+    for (final e in assets.entries) {
+      final id = e.key.substring(0, e.key.indexOf('|'));
+      final loc = pageLoc(id);
+      if (loc == null) continue; // the page is not there (a page that was never saved)
+      final p = _assetPathIn(loc, e.key);
+      final f = File(p);
+      // A stray that 0150 declines: a file in the old folder may still be the page.
+      final declined = [
+        for (final other in _locs)
+          if (other != loc &&
+              (File(_assetPathIn(other, e.key)).existsSync() || File(_stubOf(_assetPathIn(other, e.key))).existsSync()) &&
+              (_mayStillBePage(other, id) || _declinedFor(id, other)))
+            other,
+      ].isNotEmpty;
+      if (!f.existsSync() && declined) continue;
+      if (!f.existsSync()) {
+        out.add(
+          'the attachment ${_base(p)} of page $id is not at the page\'s place after the downloads (${loc == drivePath ? 'drive' : 'Sub'}); '
+          'it is ${[for (final l in _locs) '${l == drivePath ? 'drive' : 'Sub'}: ${File(_assetPathIn(l, e.key)).existsSync() ? 'file' : File(_stubOf(_assetPathIn(l, e.key))).existsSync() ? 'stub' : 'absent'}']}; '
+          'the page is at ${[for (final l in _locs) '${l == drivePath ? 'drive' : 'Sub'}: ${File('$l/$id.canvas').existsSync()}']}; '
+          'drive holds ${[for (final x in Directory(drivePath).listSync(followLinks: false)) _base(x.path)]}, unreadable ${[for (final u in nb.unreadable) '${_base(u.path)} ${u.reason}']}',
+        );
+      } else if (!_sameBytes(exempt(() => f.readAsBytesSync()), e.value)) {
+        out.add('the attachment ${_base(p)} of page $id changed');
+      }
+      for (final other in _locs) {
+        if (other == loc) continue;
+        final left = File(_assetPathIn(other, e.key));
+        // A stray that 0150 declines (a file there may still be the page) is not a failure,
+        // nor a copy whose name is taken at the page's place by the same file (a paste).
+        if (left.existsSync() && pageLoc(id) != null && !_mayStillBePage(other, id) && !_declinedFor(id, other) && !f.existsSync()) {
+          out.add(
+            'the attachment ${_base(p)} of page $id is left at the old place; ${other == drivePath ? 'drive' : 'Sub'} holds '
+            '${[for (final x in Directory(other).listSync(followLinks: false)) _base(x.path)]}, unreadable ${[for (final u in nb.unreadable) '${_base(u.path)} ${u.reason}']}',
+          );
+        }
+      }
+    }
+    for (final e in w.root.listSync(recursive: true, followLinks: false)) {
+      if (e is File && _base(e.path).contains('.kept-')) out.add('a kept copy appeared: ${_base(e.path)}');
+    }
+    final rec = Directory('${w.root.path}/app/recovery');
+    if (rec.existsSync()) {
+      for (final e in rec.listSync(followLinks: false)) {
+        if (e is Directory && _base(e.path).endsWith('.assets') && e.listSync().isNotEmpty) {
+          out.add('a file went to the recovery folder: ${_base(e.path)}');
+        }
+      }
+    }
+    // A template that is still there has every file its page had when it was saved.
+    out.addAll(templateAssetGaps(_templatesDir, savedTemplates));
+    return out;
+  }
+
+  bool _sameBytes(List<int> a, List<int> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
+  /// Opens each page with an evicted attachment headless, so its store asks; then
+  /// the daemon downloads what was asked for and the stray check runs twice.
+  Future<void> settleAttachments() async {
+    phase = 'settle: attachments';
+    for (var round = 0; round < 3; round++) {
+      final evicted = evictedPaths;
+      final ids = {for (final k in evicted.values) k.substring(0, k.indexOf('|'))}.toList()..sort();
+      log.add('attachments round $round: evicted ${evicted.keys.map(_base).toList()} of pages $ids');
+      if (ids.isEmpty) break;
+      for (final id in ids) {
+        try {
+          await nb.open(id);
+        } on Object {
+          // Not downloaded itself: the page's own file is materialised before this.
+        }
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+      // A file left at a page's old place is the stray mover's to ask for.
+      await nb.checkFolders();
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      noteAsked();
+      for (final e in evicted.entries) {
+        if (!askedAssets.contains(_norm(e.key))) {
+          // The page that holds it may not have opened: the next round asks again.
+          if (round == 2) violations.add('an evicted attachment was never asked for: ${e.key}');
+          continue;
+        }
+        await daemonMaterializeAttachment(e.key, e.value);
+      }
+      await nb.discoveryIdle;
+    }
+  }
+
+  /// Once everything else is settled (the pages are classified), the stray check
+  /// runs twice with no quiet wait: what a move left behind comes to its page.
+  bool _hasStrayFiles() => assets.keys.any((k) {
+    final loc = pageLoc(k.substring(0, k.indexOf('|')));
+    if (loc == null) return false;
+    return _locs.any(
+      (o) => o != loc && (File(_assetPathIn(o, k)).existsSync() || File(_stubOf(_assetPathIn(o, k))).existsSync()),
+    );
+  });
+
+  Future<void> settleStrays() async {
+    // Only when a file really is at a page's old place.
+    if (!_hasStrayFiles()) return;
+    phase = 'settle: strays';
+    final quiet = Notebook.strayQuiet;
+    Notebook.strayQuiet = Duration.zero;
+    try {
+      for (final file in pageFiles()) {
+        await nb.checkFile(file.path);
+      }
+      // Twice is what moves a stray whose folder is quiet; a listing that changed between
+      // the two (the download just landed) needs one more.
+      for (var i = 0; i < 4; i++) {
+        await nb.checkFolders();
+        await nb.discoveryIdle;
+        if (!_hasStrayFiles()) break;
+      }
+    } finally {
+      Notebook.strayQuiet = quiet;
+    }
+    await nb.flush();
   }
 
   // -- t3a (R-2): a consumed copy whose page is evicted --------------------------
@@ -1643,6 +2168,10 @@ class _Sim {
       }
       await Future<void>.delayed(const Duration(milliseconds: 150));
     }
+    // After the versions are settled: opening a page earlier would leave it open while a
+    // version lands (the rest of the settle is what it always was).
+    await settleAttachments();
+    await settleStrays();
   }
 
   List<String> summary(Notebook n) {
@@ -1766,7 +2295,11 @@ class _Sim {
         final same = a != null && a.length == b.length && a.containsAll(b);
         final superset = a != null && b.containsAll(a);
         if (a != null && !(lagging ? superset : same)) {
-          problems.add('page $id: live ${a.length} boxes, reload ${b.length}');
+          final texts = {for (final n in nb.current!.page.nodes) if (n is BoxRecord) '${n.id}@${n.rev}': n.snapshotText};
+          problems.add(
+            'page $id: live ${a.length} boxes, reload ${b.length}; only in the reload: ${[for (final k in b.difference(a)) '$k ${texts[k]}']}; '
+            'only live: ${[for (final k in a.difference(b)) k]}; recovery entries ${await _entriesOf(id)}; page is at ${pageLoc(id) == drivePath ? 'drive' : 'Sub'}; moved: ${log.where((l) => l == 'appMove').length}',
+          );
         }
       } on Object catch (e) {
         problems.add('page $id could not be opened after a reload: $e');
@@ -1775,7 +2308,10 @@ class _Sim {
     // 3. nothing known is gone.
     for (final id in pageIds) {
       if (!ids.contains(id)) {
-        problems.add('page $id is not listed after a reload');
+        problems.add(
+          'page $id is not listed after a reload (it is at ${pageLoc(id)}; folders ${[for (final f in nb.standaloneFolders) '${f.path} ${f.available}']}; '
+          'Sub holds ${subDir.existsSync() ? [for (final e in subDir.listSync()) _base(e.path)] : 'nothing'})',
+        );
       }
     }
     for (final m in missing()) {
@@ -1786,6 +2322,8 @@ class _Sim {
       }
     }
     checkSegment();
+    problems.addAll(await attachmentProblems());
+    auditTemplates();
     problems.addAll(violations);
     // t3c: no version was resolved while no temp held its bytes.
     for (final r in w.channel.resolveViolations) {
@@ -1842,6 +2380,9 @@ class _Sim {
   Future<void> dispose() async {
     await disposeSeam?.call();
     debugDatalessPaths = null;
+    debugAppleMode = null;
+    attachmentBeforePublishHook = null;
+    Notebook.strayQuiet = const Duration(seconds: 30);
     await w.dispose();
     if (snapRoot.existsSync()) await deleteTestFolder(snapRoot);
   }
@@ -1880,7 +2421,21 @@ List<String> _plan(_Sim s) {
     plan[2 + i * 3] = feed[i];
     plan[3 + i * 3] = 'appCheck';
   }
-  return plan;
+  // t2a: the attachments that are not downloaded follow the rest, with random numbers
+  // of their own (the sequence above is what it always was).
+  return [
+    ...plan,
+    'daemonForeignAssets',
+    'daemonEvictAttachment',
+    'appPaste',
+    'appMove',
+    'appTemplate',
+    'daemonForeignAssets',
+    'daemonEvictAttachment',
+    'appMove',
+    'appPaste',
+    'appTemplate',
+  ];
 }
 
 Future<void> _sequence(
@@ -1916,7 +2471,7 @@ Future<void> _sequence(
       }
 
       await whole().timeout(
-        const Duration(seconds: 45),
+        const Duration(seconds: 90), // a loaded machine (the whole suite) is slower: t2a adds steps
         onTimeout: () => throw StateError(
           'seed $seed hung in ${s.phase}; steps: ${s.log.join(', ')}',
         ),
@@ -1944,6 +2499,34 @@ Future<void> _sequence(
     }
   }, TracingIoOverrides(recorder));
   if (setUp == null) _ranSeeds.add(seed);
+}
+
+/// What is missing from the copies of the templates in [dir]: for each of [saved] whose
+/// template file is there, `<id>.assets/<page>/` must exist and hold every file the page
+/// had at the save, with its bytes (a missing folder and a partly filled one both count).
+List<String> templateAssetGaps(Directory dir, Map<String, ({String page, Map<String, Uint8List> files})> saved) {
+  final out = <String>[];
+  for (final e in saved.entries) {
+    if (!File('${dir.path}/${e.key}.notedtemplate').existsSync()) continue; // not listed
+    if (e.value.files.isEmpty) continue;
+    final copy = Directory('${dir.path}/${e.key}.assets/${e.value.page}');
+    if (!copy.existsSync()) {
+      out.add('the template ${e.key} has no assets folder for page ${e.value.page}');
+      continue;
+    }
+    for (final file in e.value.files.entries) {
+      final c = File('${copy.path}/${file.key}');
+      if (!c.existsSync()) {
+        out.add('the template ${e.key} lacks ${file.key} of page ${e.value.page}');
+      } else {
+        final got = c.readAsBytesSync();
+        if (got.length != file.value.length || !got.asMap().entries.every((b) => b.value == file.value[b.key])) {
+          out.add('the template ${e.key} holds other bytes for ${file.key}');
+        }
+      }
+    }
+  }
+  return out;
 }
 
 BoxRecord _plainBox(int n, String marker) => BoxRecord.create(
@@ -2121,6 +2704,86 @@ void main() {
       (repeating ? const <int>[] : [for (var i = 1; i <= _fixedSeeds + _extraSeeds; i++) i]);
 
   _windowsFolderTests();
+
+  // t2a: pinned scenarios of the attachments that are not downloaded.
+  group('attachments that are not downloaded (t2a)', () {
+    for (final kind in _t2aKillKinds) {
+      for (final seed in const [3, 8]) {
+        test('a kill at $kind (seed $seed)', () async {
+          _Sim? sim;
+          await _sequence(
+            seed,
+            setUp: (s) {
+              sim = s;
+              s.killKind = kind;
+              s.killNth = 1;
+            },
+            plan: const ['appTemplate', 'appCheck', 'daemonForeignAssets', 'appTemplate', 'appTemplate', 'appCheck', 'appTemplate'],
+          );
+          expect(sim!.killDone, isTrue, reason: 'this sequence reached its kill point');
+        }, timeout: const Timeout(Duration(minutes: 4)));
+      }
+    }
+
+    // The oracle of the template copies rejects a missing folder and a partly filled one.
+    test('the template oracle rejects a missing folder and a partly filled one, and accepts a whole one', () {
+      final root = Directory.systemTemp.createTempSync('noted_oracle');
+      addTearDown(() => root.deleteSync(recursive: true));
+      final a = Uint8List.fromList([1, 2, 3]), b = Uint8List.fromList([4, 5]);
+      Map<String, ({String page, Map<String, Uint8List> files})> saved(String id) => {
+        id: (page: 'p', files: {'a.bin': a, 'b.bin': b}),
+      };
+      File('${root.path}/t1.notedtemplate').writeAsStringSync('{}');
+      expect(templateAssetGaps(root, saved('t1')), isNotEmpty, reason: 'no folder');
+      Directory('${root.path}/t1.assets/p').createSync(recursive: true);
+      File('${root.path}/t1.assets/p/a.bin').writeAsBytesSync(a);
+      expect(templateAssetGaps(root, saved('t1')), isNotEmpty, reason: 'part of the files');
+      File('${root.path}/t1.assets/p/b.bin').writeAsBytesSync([9, 9]);
+      expect(templateAssetGaps(root, saved('t1')), isNotEmpty, reason: 'other bytes');
+      File('${root.path}/t1.assets/p/b.bin').writeAsBytesSync(b);
+      expect(templateAssetGaps(root, saved('t1')), isEmpty);
+      expect(templateAssetGaps(root, saved('t2')), isEmpty, reason: 'a template whose file is not there is not listed');
+    });
+
+    for (final entry in <String, List<String>>{
+      'a move between the two folders, with files that are present': ['appMove', 'appMove', 'restart'],
+      'an eviction, a paste and a move': [
+        'daemonEvictAttachment',
+        'appPaste',
+        'appMove',
+        'daemonEvictAttachment',
+        'appMove',
+        'appCheck',
+      ],
+      'an eviction and a template save': ['daemonEvictAttachment', 'appTemplate', 'appTemplate', 'appCheck'],
+      'every file evicted, then two moves': [
+        'appMove',
+        'daemonEvictAttachment',
+        'daemonEvictAttachment',
+        'daemonEvictAttachment',
+        'appMove',
+        'appMove',
+        'appCheck',
+      ],
+      'two evictions, a move and a restart': [
+        'appMove',
+        'daemonEvictAttachment',
+        'daemonEvictAttachment',
+        'appMove',
+        'restart',
+        'appPaste',
+        'appTemplate',
+      ],
+    }.entries) {
+      for (final seed in const [2, 5, 9]) {
+        test(
+          '${entry.key} (seed $seed)',
+          () => _sequence(seed, plan: entry.value),
+          timeout: const Timeout(Duration(minutes: 4)),
+        );
+      }
+    }
+  });
 
   group('an iCloud folder: a live notebook and a reload agree (R5.13)', () {
     for (final seed in seeds) {

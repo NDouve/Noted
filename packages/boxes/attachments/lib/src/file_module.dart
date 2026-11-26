@@ -34,7 +34,8 @@ final class FileModule extends BoxModule<FileData?> {
     IncomingFile file,
     AttachmentStore store,
   ) async {
-    final ref = await storeIncoming(file, store);
+    final ref = await storeIncomingOrNotify(file, store);
+    if (ref == null) return null;
     return (FileData(ref: ref), newFileBoxSize);
   }
 
@@ -131,6 +132,32 @@ class _FileBoxState extends State<_FileBox> {
           );
   }
 
+  // The line under the name: the size, or why there is none yet.
+  Widget _sizeLine(
+    BuildContext context, {
+    required bool missing,
+    required AttachmentDownload download,
+    required int size,
+    String? error,
+  }) {
+    final scheme = Theme.of(context).colorScheme;
+    final type = NotedTypography.of(context);
+    final text = Text(
+      downloadLabel(download) ?? (missing ? 'Still syncing' : formatByteSize(size)),
+      key: ValueKey(switch (download) {
+        AttachmentDownload.downloading => 'still-downloading',
+        AttachmentDownload.failed => 'download-failed',
+        AttachmentDownload.onDevice => missing ? 'still-syncing' : 'file-box-size',
+      }),
+      overflow: TextOverflow.ellipsis,
+      style: type.small.copyWith(color: scheme.onSurfaceVariant),
+    );
+    if (download == AttachmentDownload.failed && error != null && error.isNotEmpty) {
+      return Tooltip(message: error, child: text);
+    }
+    return text;
+  }
+
   Widget _content(BuildContext context) {
     final data = box.data;
     final store = box.attachments;
@@ -159,8 +186,15 @@ class _FileBoxState extends State<_FileBox> {
       );
     }
     final missing = attachmentMissing(ref, store);
+    final download = downloadOf(ref, store);
     Future<void> open() async {
-      if (store == null || missing) return;
+      if (store == null) return;
+      if (download != AttachmentDownload.onDevice) {
+        // Asked for, and it opens once it is here.
+        store.notify(downloadingOpenNotice);
+        return;
+      }
+      if (missing) return;
       // A file the system would run is opened only after the user says so;
       // asked first, so nothing can change between the check and the open.
       if (needsOpenConfirmation(displayName: ref.name, storedName: ref.file)) {
@@ -177,7 +211,11 @@ class _FileBoxState extends State<_FileBox> {
     }
 
     return Tooltip(
-      message: missing
+      message: download == AttachmentDownload.failed
+          ? "$label: can't download"
+          : download == AttachmentDownload.downloading
+          ? '$label: downloading'
+          : missing
           ? '$label: still syncing'
           : 'Double-click to open $label',
       // A click selects the box (the canvas does that); two open the file.
@@ -212,14 +250,24 @@ class _FileBoxState extends State<_FileBox> {
                         overflow: TextOverflow.ellipsis,
                         style: type.bodyStrong,
                       ),
-                      Text(
-                        missing ? 'Still syncing' : formatByteSize(ref.size),
-                        key: ValueKey(
-                          missing ? 'still-syncing' : 'file-box-size',
-                        ),
-                        style: type.small.copyWith(
-                          color: scheme.onSurfaceVariant,
-                        ),
+                      Row(
+                        children: [
+                          Flexible(
+                            child: _sizeLine(
+                              context,
+                              missing: missing,
+                              download: download,
+                              size: ref.size,
+                              error: store is DownloadingAttachmentStore && ref.file != null
+                                  ? store.downloadError(ref.file!)
+                                  : null,
+                            ),
+                          ),
+                          if (download != AttachmentDownload.onDevice &&
+                              store is DownloadingAttachmentStore &&
+                              ref.file != null)
+                            DownloadRetry(store: store, fileName: ref.file!),
+                        ],
                       ),
                     ],
                   ),

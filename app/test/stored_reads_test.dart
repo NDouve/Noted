@@ -37,7 +37,6 @@ const String _pullPrivate = "the in-app pull's private folder (nothing evicts th
 const String _mcp = 'the MCP server: guarded just before (0190)';
 const String _writeOnly = 'a write-only open (append or write mode, no read)';
 const String _notFile = 'not a file';
-const String _t2a = 't2a: routed next';
 
 typedef _Allowed = ({int count, String reason});
 
@@ -81,6 +80,9 @@ const Map<String, _Allowed> _allowed = {
 
   // Local cache.
   'packages/boxes/attachments/lib/src/image_module.dart::loadDisplayCopyChecked::readAsBytes': (count: 1, reason: _cache),
+  // The temporary copy an embedded file is opened from, in the system temp folder:
+  // an earlier open wrote it, and this one hashes it again before reusing it.
+  'app/lib/src/page_attachments.dart::PageAttachments.open::openRead': (count: 1, reason: _cache),
 
   // Deliberate hydration (a Windows placeholder; Apple returns before it).
   'app/lib/src/notebook.dart::Notebook._hydrate::openRead': (count: 1, reason: _hydrate),
@@ -131,18 +133,6 @@ const Map<String, _Allowed> _allowed = {
   'app/lib/src/notebook.dart::_ReplayFailure.toString::copy': (count: 1, reason: _notFile),
   'packages/noted_mcp/lib/src/tools.dart::NotedTools._canRead::open': (count: 1, reason: _notFile),
 
-  // t2a routes the attachment sites next, in the same lane, and deletes these
-  // entries (a stale entry fails this test).
-  'app/lib/src/notebook.dart::Notebook._holdsContent::readAsBytes': (count: 2, reason: _t2a),
-  'app/lib/src/page_attachments.dart::PageAttachments.read::readAsBytes': (count: 1, reason: _t2a),
-  'app/lib/src/page_attachments.dart::PageAttachments.open::openRead': (count: 1, reason: _t2a),
-  'app/lib/src/attachment_copy.dart::checkAttachmentFile::openRead': (count: 2, reason: _t2a),
-  'app/lib/src/attachment_copy.dart::attachmentNameToTake::openRead': (count: 1, reason: _t2a),
-  'app/lib/src/attachment_copy.dart::sweepAttachmentLeftovers::openRead': (count: 1, reason: _t2a),
-  'app/lib/src/attachment_copy.dart::sameContent::open': (count: 2, reason: _t2a),
-  'app/lib/src/attachment_copy.dart::_settleExisting::open': (count: 1, reason: _t2a),
-  'app/lib/src/attachment_copy.dart::_settleExisting::openRead': (count: 1, reason: _t2a),
-  'app/lib/src/attachment_copy.dart::_streamCopy::openRead': (count: 1, reason: _t2a),
 };
 
 void main() {
@@ -263,7 +253,6 @@ extension E on File {
       _mcp,
       _writeOnly,
       _notFile,
-      _t2a,
     };
     for (final e in _allowed.entries) {
       expect(classes, contains(e.value.reason), reason: e.key);

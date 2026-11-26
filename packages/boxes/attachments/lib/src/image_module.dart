@@ -60,7 +60,8 @@ final class ImageModule extends BoxModule<ImageData?> {
   ) async {
     final size = await imageSize(file.bytes);
     if (size == null) return null;
-    final ref = await storeIncoming(file, store);
+    final ref = await storeIncomingOrNotify(file, store);
+    if (ref == null) return null;
     final (w, h) = size;
     final data = ImageData(ref: ref, width: w, height: h);
     return (data, newImageBoxSize(w, h));
@@ -387,7 +388,11 @@ class _ImageBoxState extends State<_ImageBox> {
         attachmentMissing(data.ref, widget.box.attachments)) {
       picture = ColoredBox(
         color: scheme.surfaceContainerHighest,
-        child: StillSyncing(name: data.ref.name),
+        child: StillSyncing(
+          name: data.ref.name,
+          store: widget.box.attachments,
+          fileName: data.ref.file,
+        ),
       );
     } else {
       picture = ColoredBox(color: scheme.surfaceContainerHighest);

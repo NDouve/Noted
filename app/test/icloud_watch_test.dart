@@ -147,6 +147,38 @@ void main() {
       expect(nb.unreadable.where((u) => u.reason == 'Still downloading'), isEmpty);
     });
 
+    test('t2a: the open page asks for its stub attachment with no widget, and again on a change event; a closed page never', () async {
+      final f = await w.picked(platform: CloudPlatform.ios);
+      await externalPage('keep0', order: 0);
+      await externalPage('open1');
+      final hash = contentHash([1, 2, 3]);
+      final stubOpen = File(w.path('open1.assets/.$hash.bin.icloud'))
+        ..createSync(recursive: true)
+        ..writeAsStringSync('');
+      File(w.path('closed1.assets/.$hash.bin.icloud'))
+        ..createSync(recursive: true)
+        ..writeAsStringSync('');
+      await externalPage('closed1');
+      final nb = w.notebook(f);
+      var t = DateTime(2031, 1, 1);
+      nb.now = () => t;
+      await nb.load();
+      List<String> asked() => w.channel.callsOf('startDownloading').map((c) => slashes('${c.args['path']}')).toList();
+      final want = slashes(w.path('open1.assets/$hash.bin'));
+      expect(asked(), isNot(contains(want)), reason: 'not open yet');
+      await nb.open('open1');
+      await waitFor(() => asked().contains(want), what: 'the open page to ask for its attachment');
+      final first = asked().where((p) => p == want).length;
+      // A change event within 30 s asks for nothing more.
+      await w.channel.emit('changed', {'path': stubOpen.path});
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(asked().where((p) => p == want), hasLength(first));
+      t = t.add(const Duration(seconds: 31));
+      await w.channel.emit('changed', {'path': stubOpen.path});
+      await waitFor(() => asked().where((p) => p == want).length > first, what: 'the next request');
+      expect(asked().where((p) => p.contains('closed1.assets')), isEmpty, reason: 'a closed page is never asked for');
+    });
+
     test('copies beside a page that is only a stub are copies of it: the page stays listed, no duplicate, and the copies merge when it arrives', () async {
       final f = await w.picked(platform: CloudPlatform.ios);
       await externalPage('gone1');
