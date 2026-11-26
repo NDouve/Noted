@@ -6,6 +6,18 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_core/noted_core.dart';
+import 'package:noted_core/src/storage/exclusive_move.dart'
+    show
+        MoveStrategy,
+        debugMoveStrategy,
+        debugNoReplaceErrno,
+        publishByRename;
+import 'package:noted_core/src/storage/exclusive_publish.dart'
+    show
+        debugLinkCalls,
+        debugLinkErrno,
+        debugPublishAsAndroid,
+        nonLinkPublisher;
 import 'support/coordination_support.dart';
 import 'support/page_save.dart';
 
@@ -184,6 +196,198 @@ void suite() {
     File(store.pathFor('p1')).writeAsStringSync('old');
     await store.save(page);
     expect((await store.load('p1')).meta.title, 'One');
+  });
+
+  // Android: `link` is refused by SELinux, so the publisher renames instead.
+  // Every case forces the Android branch and registers the publisher.
+  group('Android publish', () {
+    setUp(() {
+      debugPublishAsAndroid = true;
+      useRenamePublishOnAndroid();
+      debugLinkCalls = 0;
+    });
+    tearDown(() {
+      debugPublishAsAndroid = null;
+      nonLinkPublisher = null;
+      debugLinkErrno = null;
+      debugNoReplaceErrno = null;
+      debugMoveStrategy = null;
+      debugLinkCalls = 0;
+    });
+
+    test('where link works it publishes by link, once', () async {
+      final tmp = File(p('a.tmp'))..writeAsBytesSync([1, 2, 3]);
+      expect(await publishExclusive(tmp, p('a.bin')), isTrue);
+      expect(File(p('a.bin')).readAsBytesSync(), [1, 2, 3]);
+      expect(tmp.existsSync(), isFalse);
+      expect(debugLinkCalls, 1);
+    }, skip: Platform.isWindows);
+
+    final strategies = <MoveStrategy>[
+      MoveStrategy.lstatRename,
+      if (Platform.isLinux) MoveStrategy.native,
+    ];
+    for (final strategy in strategies) {
+      for (final errno in [13, 1]) {
+        group('link refused with errno $errno, ${strategy.name}', () {
+          setUp(() {
+            debugLinkErrno = errno;
+            debugMoveStrategy = strategy;
+          });
+
+          test('publishes to a free name and consumes the temp', () async {
+            final tmp = File(p('a.tmp'))..writeAsBytesSync([4, 5, 6]);
+            expect(await publishExclusive(tmp, p('a.bin')), isTrue);
+            expect(File(p('a.bin')).readAsBytesSync(), [4, 5, 6]);
+            expect(tmp.existsSync(), isFalse);
+            expect(debugLinkCalls, 1);
+          });
+
+          test('a file at the target gives false, both untouched', () async {
+            File(p('a.bin')).writeAsBytesSync([9, 9]);
+            final tmp = File(p('a.tmp'))..writeAsBytesSync([1]);
+            expect(await publishExclusive(tmp, p('a.bin')), isFalse);
+            expect(File(p('a.bin')).readAsBytesSync(), [9, 9]);
+            expect(tmp.readAsBytesSync(), [1]);
+          });
+
+          test('a folder at the target gives false, both untouched', () async {
+            Directory(p('a.bin')).createSync();
+            File(p('a.bin${Platform.pathSeparator}x')).writeAsBytesSync([7]);
+            final tmp = File(p('a.tmp'))..writeAsBytesSync([1]);
+            expect(await publishExclusive(tmp, p('a.bin')), isFalse);
+            expect(
+              File(p('a.bin${Platform.pathSeparator}x')).readAsBytesSync(),
+              [7],
+            );
+            expect(tmp.readAsBytesSync(), [1]);
+          });
+
+          test('a dangling link at the target gives false', () async {
+            Link(p('a.bin')).createSync(p('nowhere'));
+            final tmp = File(p('a.tmp'))..writeAsBytesSync([1]);
+            expect(await publishExclusive(tmp, p('a.bin')), isFalse);
+            expect(Link(p('a.bin')).targetSync(), p('nowhere'));
+            expect(tmp.readAsBytesSync(), [1]);
+          }, skip: Platform.isWindows);
+
+          test('a stub at the target gives false, both untouched', () async {
+            File(p('.a.bin.icloud')).writeAsBytesSync([8]);
+            final tmp = File(p('a.tmp'))..writeAsBytesSync([1]);
+            expect(await publishExclusive(tmp, p('a.bin')), isFalse);
+            expect(File(p('.a.bin.icloud')).readAsBytesSync(), [8]);
+            expect(File(p('a.bin')).existsSync(), isFalse);
+            expect(tmp.readAsBytesSync(), [1]);
+          });
+
+          test('a target created before the OS call is kept; the hook runs once', () async {
+            final tmp = File(p('a.tmp'))..writeAsBytesSync([1, 2]);
+            var hooked = 0;
+            final ok = await publishExclusive(
+              tmp,
+              p('a.bin'),
+              beforeOsCall: () {
+                hooked++;
+                File(p('a.bin')).writeAsBytesSync([9]);
+              },
+            );
+            expect(ok, isFalse);
+            expect(File(p('a.bin')).readAsBytesSync(), [9]);
+            expect(tmp.readAsBytesSync(), [1, 2]);
+            expect(hooked, 1);
+          });
+
+          test('a missing folder throws', () async {
+            final tmp = File(p('a.tmp'))..writeAsBytesSync([1]);
+            await expectLater(
+              publishExclusive(tmp, p('no${Platform.pathSeparator}a.bin')),
+              throwsA(isA<FileSystemException>()),
+            );
+            expect(tmp.readAsBytesSync(), [1]);
+          });
+        });
+      }
+    }
+
+    test('another link errno throws, names the errno and renames nothing', () async {
+      debugLinkErrno = 28;
+      debugMoveStrategy = MoveStrategy.lstatRename;
+      final tmp = File(p('a.tmp'))..writeAsBytesSync([1]);
+      await expectLater(
+        publishExclusive(tmp, p('a.bin')),
+        throwsA(
+          isA<FileSystemException>().having(
+            (e) => e.message,
+            'message',
+            contains('errno 28'),
+          ),
+        ),
+      );
+      expect(File(p('a.bin')).existsSync(), isFalse);
+      expect(tmp.readAsBytesSync(), [1]);
+    });
+
+    test('a renameat2 that is missing or refuses falls to the lstat path', () async {
+      debugLinkErrno = 13;
+      debugMoveStrategy = MoveStrategy.native;
+      for (final errno in [38, 22]) {
+        debugNoReplaceErrno = errno;
+        final tmp = File(p('a$errno.tmp'))..writeAsBytesSync([errno]);
+        expect(await publishExclusive(tmp, p('a$errno.bin')), isTrue);
+        expect(File(p('a$errno.bin')).readAsBytesSync(), [errno]);
+        expect(tmp.existsSync(), isFalse);
+        // A taken target is still false.
+        final tmp2 = File(p('b$errno.tmp'))..writeAsBytesSync([1]);
+        expect(await publishExclusive(tmp2, p('a$errno.bin')), isFalse);
+        expect(File(p('a$errno.bin')).readAsBytesSync(), [errno]);
+        expect(tmp2.existsSync(), isTrue);
+      }
+    }, skip: !Platform.isLinux);
+
+    test('a renameat2 refused as busy throws and moves nothing', () async {
+      debugLinkErrno = 13;
+      debugMoveStrategy = MoveStrategy.native;
+      debugNoReplaceErrno = 13;
+      final tmp = File(p('a.tmp'))..writeAsBytesSync([1]);
+      await expectLater(
+        publishExclusive(tmp, p('a.bin')),
+        throwsA(
+          isA<FileSystemException>().having(
+            (e) => e.message,
+            'message',
+            allOf(contains('busy'), contains('errno 13')),
+          ),
+        ),
+      );
+      expect(File(p('a.bin')).existsSync(), isFalse);
+      expect(tmp.readAsBytesSync(), [1]);
+    }, skip: !Platform.isLinux);
+
+    test('with no publisher registered a refused link throws and nothing is replaced', () async {
+      nonLinkPublisher = null;
+      debugLinkErrno = 13;
+      final tmp = File(p('a.tmp'))..writeAsBytesSync([1]);
+      await expectLater(
+        publishExclusive(tmp, p('a.bin')),
+        throwsA(isA<FileSystemException>()),
+      );
+      expect(File(p('a.bin')).existsSync(), isFalse);
+      expect(tmp.readAsBytesSync(), [1]);
+      // Over a taken name it is false, not a replace.
+      File(p('a.bin')).writeAsBytesSync([9]);
+      expect(await publishExclusive(tmp, p('a.bin')), isFalse);
+      expect(File(p('a.bin')).readAsBytesSync(), [9]);
+    });
+
+    test('useRenamePublishOnAndroid registers the publisher only on Android', () {
+      nonLinkPublisher = null;
+      debugPublishAsAndroid = false;
+      useRenamePublishOnAndroid();
+      expect(nonLinkPublisher, isNull);
+      debugPublishAsAndroid = true;
+      useRenamePublishOnAndroid();
+      expect(nonLinkPublisher, same(publishByRename));
+    });
   });
 }
 

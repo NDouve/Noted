@@ -8,6 +8,8 @@ version.
 
 Versions are listed newest first.
 
+Host-only (not the Box API), run 2026-11-25-01, task 1 (Android publishes without hard links): `useRenamePublishOnAndroid()` is exported by `noted_core.dart`; the host calls it once at start. On Android it registers `publishByRename`, which `publishExclusive` then uses (`link` first; if SELinux refuses it, `renameat2(RENAME_NOREPLACE)`, else an lstat and `rename(2)` in one synchronous call). `publishByRename`, `nonLinkPublisher` and the test seams (`debugLinkErrno`, `debugLinkCalls`, `debugNoReplaceErrno`, `debugPublishAsAndroid`) are hidden. No module-facing change, no version bump.
+
 Host-only (not the Box API), run 2026-11-23-01, document import stage A: `PageCanvasState.captureImportTarget`, the public opaque `ImportTarget` (and `ImportInsert`, `importStoppedNotice`) in `import_target.dart`, and `PageCanvasState.insertImportInto` (not on `CommandHost`; `insertFiles` is unchanged). The note module implements the existing `createFromFile` for `<stem>.noted-blocks.json` and `.md`, with `fileAffinity` still 0. No module-facing member changed; no version bump.
 
 Host-only (not the Box API), run 2026-11-22-01, task 3 step 2 (iCloud N4 sites, cloud-parity R5.4): `PageStore.save` is removed (no production caller; the app publishes with `saveNew` and replaces with `saveIfUnchanged`), and `TemplateStore.save` now publishes a unique temporary file with `publishExclusive` (a taken name is the same `FileSystemException`). `PageStore.scan` and `TemplateStore.save` make a missing folder through one coordinated write, and `BinderStore.create` rethrows a `StorageBusy` instead of reporting a drive that can't publish. No module-facing change, no version bump.
