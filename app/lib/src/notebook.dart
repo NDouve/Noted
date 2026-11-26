@@ -1942,6 +1942,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   @visibleForTesting
   Future<void> Function(String point, String path)? syncHook;
 
+  /// A test seam: awaited in an AI write right before it looks up the page of
+  /// its box, so a test can hold or fail one write's lookup.
+  @visibleForTesting
+  Future<void> Function(AiLinkWriteBox request)? aiLookupHook;
+
   /// A test seam: sees the page a closed page's conflict-copy merge produced,
   /// and returns the page to write (a merge that drops a node).
   @visibleForTesting
@@ -9473,6 +9478,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (!await aiWaitLoaded(left.isNegative ? Duration.zero : left)) return AiLinkResponse.error(AiLinkCode.busy);
     final refusal = recheck();
     if (refusal != null) return AiLinkResponse.error(refusal);
+    await aiLookupHook?.call(request);
     final pageId = await aiPageOfBox(request.box, hint: code.target.page);
     if (pageId == null) return AiLinkResponse.error(AiLinkCode.noBox);
     if (confirm != null) {
