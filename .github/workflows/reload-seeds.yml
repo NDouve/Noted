@@ -1,0 +1,63 @@
+# Manual run of the iCloud reload-equivalence test on the Windows runner: a
+# range of seeds, then one seed repeated. Each step stops at its first failing
+# seed and prints the failure (the lost marker, the last write to its file and
+# the Dart stack of the app's write). Uploads nothing.
+name: Reload seeds
+
+on:
+  workflow_dispatch:
+    inputs:
+      seeds:
+        description: 'Seeds to run: numbers and ranges, e.g. 1-40 or 3,7,20-25 (empty: skip)'
+        default: '1-40'
+      repeat_seed:
+        description: 'The seed to repeat'
+        default: '23'
+      repeat_count:
+        description: 'How many times to repeat it (0: skip)'
+        default: '200'
+
+permissions:
+  contents: read
+
+env:
+  FLUTTER_VERSION: 3.47.8
+
+jobs:
+  reload-seeds:
+    name: Reload seeds (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Flutter version
+        run: flutter --version
+
+      - name: Get dependencies (workspace root)
+        run: flutter pub get
+
+      - name: Seeds
+        if: ${{ inputs.seeds != '' }}
+        shell: bash
+        working-directory: app
+        timeout-minutes: 40
+        env:
+          NOTED_RELOAD_SEEDS: ${{ inputs.seeds }}
+        run: flutter test test/icloud_reload_equivalence_test.dart --name "seed [0-9]+$" --reporter expanded
+
+      - name: One seed, repeated
+        if: ${{ !cancelled() && inputs.repeat_count != '0' && inputs.repeat_count != '' }}
+        shell: bash
+        working-directory: app
+        timeout-minutes: 75
+        env:
+          NOTED_RELOAD_REPEAT_SEED: ${{ inputs.repeat_seed }}
+          NOTED_RELOAD_REPEAT_COUNT: ${{ inputs.repeat_count }}
+        run: flutter test test/icloud_reload_equivalence_test.dart --name "seed ${NOTED_RELOAD_REPEAT_SEED}, run [0-9]+ of" --reporter expanded
