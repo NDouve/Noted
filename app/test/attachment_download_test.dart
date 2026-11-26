@@ -21,6 +21,7 @@ import 'package:noted_core/noted_core.dart';
 import 'package:noted_core/src/storage/dataless.dart' show debugDatalessPaths, debugMarkDataless, debugUnmarkDataless;
 import 'package:noted_core/src/storage/exclusive_move.dart' show debugMoveStrategy, debugRenameDelay;
 import 'package:noted_core/src/storage/folder_walk.dart' show debugAppleMode;
+import 'support/io_trace.dart' show IoTrace, TracingIoOverrides;
 import 'support/notebook_folder.dart';
 
 void main() {
@@ -154,6 +155,35 @@ void main() {
       expect(names(assetsOf(extra, a)), isEmpty, reason: 'the copied files were removed');
       expect(File('${pages.path}$sep$a.canvas').readAsStringSync(), text);
       expect(names(src), [name, name2]..sort());
+    });
+
+    test('Delete the original keeps an original that is only a stub now, asks for it, and does not call it gone', () async {
+      final (nb, a, x) = await scanned();
+      final src = assetsOf(pages, a);
+      put(src, name, good);
+      final work = await Directory('${root.path}/Work').create();
+      final binder = await nb.addBinder(work.path);
+      final kept = await (() async {
+        try {
+          await nb.moveToLocation(a, binderPath: binder.path);
+        } on OriginalsKeptException catch (e) {
+          return e.move;
+        }
+        fail('the move should have kept the originals');
+      })();
+      expect(File('${assetsOf(work, a).path}$sep$name').readAsBytesSync(), good);
+      // The original's file is evicted: only its stub stands.
+      File('${src.path}$sep$name').deleteSync();
+      File('${src.path}$sep.$name.icloud').writeAsStringSync('');
+      await expectLater(
+        nb.deleteOriginals(kept),
+        throwsA(isA<NotebookException>().having((e) => e.message, 'message', contains('still downloading'))),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(File('${src.path}$sep.$name.icloud').existsSync(), isTrue, reason: 'the stub is not a missing file');
+      expect(src.existsSync(), isTrue);
+      expect(askedFor('${src.path}$sep$name') || askedFor('${src.path}$sep.$name.icloud'), isTrue);
+      expect(File('${assetsOf(work, a).path}$sep$name').existsSync(), isTrue, reason: 'the copy stays');
     });
 
     test('with no requester the text says the file is a placeholder', () async {
@@ -439,9 +469,15 @@ void main() {
 
     test('a move reads nothing of the evicted file, leaves it asked for, and moves the others one by one', () async {
       final (nb, a, x, src) = await world();
+      final trace = _Opens();
       await expectLater(
-        nb.move(a, parentId: x),
+        IOOverrides.runWithIOOverrides(() => nb.move(a, parentId: x), TracingIoOverrides(trace)),
         throwsA(isA<NotebookException>().having((e) => e.message, 'message', contains('Still downloading, left in the old folder: "$name2"'))),
+      );
+      expect(
+        trace.opens.where((o) => o.toLowerCase().endsWith('${lower('${src.path}$sep$name2')}')),
+        isEmpty,
+        reason: 'no open or read of it, not even to download it: ${trace.opens}',
       );
       await Future<void>.delayed(Duration.zero);
       expect(File('${extra.path}$sep$a.canvas').existsSync(), isTrue, reason: 'the page moved');
@@ -712,4 +748,19 @@ void main() {
       expect(File('${assetsOf(extra, a).path}$sep$name').readAsBytesSync(), good);
     });
   });
+}
+// Records the operations that open or read a file.
+class _Opens extends IoTrace {
+  final List<String> ops = [];
+
+  List<String> get opens => [
+    for (final o in ops)
+      if (o.startsWith('open') || o.startsWith('read')) o,
+  ];
+
+  @override
+  int begin(String op, String path, {String? to}) {
+    ops.add('$op ${path.replaceAll(r'', '/')}');
+    return super.begin(op, path, to: to);
+  }
 }
