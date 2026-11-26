@@ -1022,6 +1022,32 @@ void main() {
       expect(dataOf(t.nb, 'ba')['text'], cr.ok ? 'AC' : 'A');
     });
 
+    test("a new code's write waits for a held write of the old code on the same box", () async {
+      final t = await withBox();
+      await t.nb.handleAiLink(req('ba', t.code, content: 'warm up'));
+      await t.nb.createPage(); // t.a is closed now
+      final h = holdLookup(t.nb);
+      final order = <String>[];
+      final a = t.nb.handleAiLink(req('ba', t.code, content: 'A')).then((r) {
+        order.add('A');
+        return r;
+      });
+      await settle();
+      // A new Writer code replaces the old one; its question is allowed.
+      final fresh = await issue('ba', label: 'New chat');
+      final b = t.nb.handleAiLink(req('ba', fresh, content: 'B', mode: AiLinkMode.append)).then((r) {
+        order.add('B');
+        return r;
+      });
+      await settle();
+      expect(asked, hasLength(2), reason: "the old code's question, then the new code's");
+      expect(h.seen, ['A'], reason: "B's lookup waits for A, though its code was approved later");
+      h.hold.complete();
+      expect((await b).ok, isTrue);
+      await a;
+      expect(order, ['A', 'B']);
+    });
+
     test('a write to another box is not held by a question open on this one', () async {
       final t = await withBox();
       t.nb.current!.insertBox(box('bb', text: 'old'));

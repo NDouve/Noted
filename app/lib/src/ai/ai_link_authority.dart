@@ -366,7 +366,7 @@ class AiLinkAuthority {
       final AiLinkResponse response;
       switch (request) {
         case AiLinkWriteBox():
-          final mine = ticket ?? waiting?.ticket ?? _take(request.box, code.id);
+          final mine = ticket ?? waiting!.ticket!;
           ticket = mine;
           response = await _write(request, code, deadline, open, mine);
         case AiLinkAccess():
