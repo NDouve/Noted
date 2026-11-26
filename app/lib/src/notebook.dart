@@ -6122,7 +6122,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       Timer? slow;
       if (walk != null) {
         slow = Timer(const Duration(seconds: 2), () {
-          debugPrint('The folder ${src.path} is still being moved; ${dst.parent.path} and its own folder are locked.');
+          debugPrint('The folder ${src.path} is still being moved; ${src.parent.path} and ${dst.parent.path} stay locked until it is done.');
           if (!_notices.isClosed) {
             _notices.add('Moving ${_assetsOwnerName(src)}: the folder is still being moved.');
           }
