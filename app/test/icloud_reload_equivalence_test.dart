@@ -1687,7 +1687,7 @@ class _Sim {
         for (final other in _locs)
           if (other != loc &&
               (File(_assetPathIn(other, e.key)).existsSync() || File(_stubOf(_assetPathIn(other, e.key))).existsSync()) &&
-              (_mayStillBePage(other, id) || declinedStrays.contains('$id|$other') || _declinedFor(id, other)))
+              (_mayStillBePage(other, id) || declinedStrays.contains('$id|$other') || (_declinedFor(id, other) && !releasedStrays.contains('$id|$other'))))
             other,
       ].isNotEmpty;
       if (!f.existsSync() && declined) continue;
@@ -1706,7 +1706,7 @@ class _Sim {
         final left = File(_assetPathIn(other, e.key));
         // A stray that 0150 declines (a file there may still be the page) is not a failure,
         // nor a copy whose name is taken at the page's place by the same file (a paste).
-        if (left.existsSync() && pageLoc(id) != null && !_mayStillBePage(other, id) && !declinedStrays.contains('$id|$other') && !_declinedFor(id, other) && !f.existsSync()) {
+        if (left.existsSync() && pageLoc(id) != null && !_mayStillBePage(other, id) && !declinedStrays.contains('$id|$other') && !(_declinedFor(id, other) && !releasedStrays.contains('$id|$other')) && !f.existsSync()) {
           out.add(
             'the attachment ${_base(p)} of page $id is left at the old place; ${other == drivePath ? 'drive' : 'Sub'} holds '
             '${[for (final x in Directory(other).listSync(followLinks: false)) _base(x.path)]}, unreadable ${[for (final u in nb.unreadable) '${_base(u.path)} ${u.reason}']}',
@@ -1800,21 +1800,6 @@ class _Sim {
       }
     } finally {
       Notebook.strayQuiet = quiet;
-    }
-    // What the app declined to move (0150: a file it could not read, such as a leftover
-    // of a replace, in the folder counts as the page), judged now: the reload that the
-    // verify makes puts the leftovers back and so removes the reason.
-    for (final k in assets.keys) {
-      final id = k.substring(0, k.indexOf('|'));
-      final loc = pageLoc(id);
-      if (loc == null) continue;
-      for (final o in _locs) {
-        if (o == loc) continue;
-        final p = _assetPathIn(o, k);
-        if ((File(p).existsSync() || File(_stubOf(p)).existsSync()) && _mayStillBePage(o, id)) {
-          declinedStrays.add('$id|$o');
-        }
-      }
     }
     await nb.flush();
   }
@@ -2199,6 +2184,56 @@ class _Sim {
     }
     await nb.flush();
     await nb.discoveryIdle;
+    // Judged last, after every look the settle makes: an excuse is kept only while the
+    // app still had its reason.
+    _recordDeclinedStrays();
+  }
+
+  void _recordDeclinedStrays() {
+    // What the app declined to move (0150: a file it could not read, such as a leftover
+    // of a replace, in the folder counts as the page), judged now: the reload that the
+    // verify makes puts the leftovers back and so removes the reason.
+    for (final k in assets.keys) {
+      final id = k.substring(0, k.indexOf('|'));
+      final loc = pageLoc(id);
+      if (loc == null) continue;
+      for (final o in _locs) {
+        if (o == loc) continue;
+        final p = _assetPathIn(o, k);
+        if ((File(p).existsSync() || File(_stubOf(p)).existsSync()) && _mayStillBePage(o, id)) {
+          declinedStrays.add('$id|$o');
+        }
+      }
+    }
+  }
+
+  // Strays that were excused whose reason is gone (the reload put the leftover back): the
+  // stray check runs with no quiet wait, and the file must then come to its page's place.
+  final Set<String> releasedStrays = {};
+
+  Future<void> releaseDeclinedStrays() async {
+    final gone = [
+      for (final e in declinedStrays)
+        if (!_mayStillBePage(e.substring(e.indexOf('|') + 1), e.substring(0, e.indexOf('|')))) e,
+    ];
+    if (gone.isEmpty) return;
+    phase = 'verify: released strays';
+    final quiet = Notebook.strayQuiet;
+    Notebook.strayQuiet = Duration.zero;
+    try {
+      for (final file in pageFiles()) {
+        await nb.checkFile(file.path);
+      }
+      for (var i = 0; i < 3; i++) {
+        await nb.checkFolders();
+        await nb.discoveryIdle;
+      }
+    } finally {
+      Notebook.strayQuiet = quiet;
+    }
+    await nb.flush();
+    declinedStrays.removeAll(gone);
+    releasedStrays.addAll(gone);
   }
 
   List<String> summary(Notebook n) {
@@ -2349,6 +2384,7 @@ class _Sim {
       }
     }
     checkSegment();
+    await releaseDeclinedStrays();
     problems.addAll(await attachmentProblems());
     auditTemplates();
     problems.addAll(violations);
