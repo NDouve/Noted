@@ -633,7 +633,7 @@ const List<Site> exportSites = [
   ('app/lib/src/export/export_write.dart', 'linked = await publish(a, linkPath);', 1, "the probe's link"),
   ('app/lib/src/export/export_write.dart', 'await publish(File(aside), target);', 1, 'the Put back publish: never over a file at the name'),
   ('app/lib/src/export/export_write.dart', 'await deleteFileIfMatches(e.path, identity: id);', 1, 'the removal of a staging temp or its aside, against the identity read'),
-  ('app/lib/src/export/export_write.dart', 'final r = await createExclusive(target, bytes, open: open, sandboxed: sandboxed);', 1, "the exclusive create where hard links don't work"),
+  ('app/lib/src/export/export_write.dart', 'final r = await createExclusive(target, bytes, open: opener, sandboxed: sandboxed);', 1, "the exclusive create where hard links don't work"),
   ('app/lib/src/export/exclusive_create.dart', 'final r = await deleteFileIfMatches(path, bytes: Uint8List.sublistView(bytes, 0, written));', 1, "the exclusive create's cleanup: a partial file removed only when it matches what was written"),
 ];
 

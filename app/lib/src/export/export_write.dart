@@ -82,7 +82,7 @@ class ExportWriter {
     this.publish = publishExclusive,
     this.replace,
     this.hardLinks,
-    this.open,
+    this.opener,
     this.posix,
     this.afterStaleIdentity,
     DateTime Function()? now,
@@ -107,7 +107,7 @@ class ExportWriter {
   final Future<bool> Function(String folder)? hardLinks;
 
   /// The exclusive create's opener, a seam.
-  final ExclusiveOpener? open;
+  final ExclusiveOpener? opener;
 
   /// Whether the hard-link probe is needed: null is every platform but Windows,
   /// whose publish is a move and needs no links. A seam.
@@ -176,7 +176,7 @@ class ExportWriter {
         "Choose a new name; Noted can't safely replace a file here.",
       );
       if (_taken(target)) return noReplace;
-      final r = await createExclusive(target, bytes, open: open, sandboxed: sandboxed);
+      final r = await createExclusive(target, bytes, open: opener, sandboxed: sandboxed);
       return r == ExclusiveOutcome.taken ? noReplace : _exported(name);
     }
     final tmp = File('$folder${Platform.pathSeparator}${exportTempName(name)}');

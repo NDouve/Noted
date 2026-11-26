@@ -33,7 +33,7 @@ void main() {
     ExportReplace? replace,
     Future<bool> Function(String)? hardLinks,
     bool? posix,
-    ExclusiveOpener? open,
+    ExclusiveOpener? opener,
     DateTime Function()? now,
     Future<void> Function(String)? afterStaleIdentity,
   }) => ExportWriter(
@@ -51,7 +51,7 @@ void main() {
     replace: replace,
     hardLinks: hardLinks,
     posix: posix,
-    open: open,
+    opener: opener,
     now: now,
     afterStaleIdentity: afterStaleIdentity,
   );
@@ -415,7 +415,7 @@ void main() {
 
     test('a taken name is refused before any prompt, and nothing leaves its name', () async {
       File(target).writeAsStringSync('old');
-      final r = await write(writer(hardLinks: (_) async => false, open: ioOpener()), 'new');
+      final r = await write(writer(hardLinks: (_) async => false, opener: ioOpener()), 'new');
       expect(r.kind, ExportWriteKind.failed);
       expect(r.message, "Choose a new name; Noted can't safely replace a file here.");
       expect(asked, isEmpty);
@@ -424,21 +424,21 @@ void main() {
     });
 
     test('a new file uses the exclusive create', () async {
-      final r = await write(writer(hardLinks: (_) async => false, open: ioOpener()), 'brand new');
+      final r = await write(writer(hardLinks: (_) async => false, opener: ioOpener()), 'brand new');
       expect(r.message, 'Exported out.txt.');
       expect(File(target).readAsStringSync(), 'brand new');
       expect(names(), ['out.txt']);
     });
 
     test('a name taken after the check is refused by the exclusive create itself', () async {
-      final r = await writer(hardLinks: (_) async => false, open: ioOpener()).write(target, () async {
+      final r = await writer(hardLinks: (_) async => false, opener: ioOpener()).write(target, () async {
         return b('x');
       });
       expect(r.exported, isTrue);
       // Taken between the check and the create: the opener answers "taken".
       File(path('late.txt')).writeAsStringSync('late');
       final r2 = await write(
-        writer(hardLinks: (_) async => false, open: (p) => null),
+        writer(hardLinks: (_) async => false, opener: (p) => null),
         'y',
         to: path('late.txt'),
       );
@@ -450,7 +450,7 @@ void main() {
       var publishes = 0;
       final w = writer(
         posix: true,
-        open: ioOpener(),
+        opener: ioOpener(),
         publish: (tmp, to) async {
           publishes++;
           throw const FileSystemException('Operation not permitted');
@@ -483,7 +483,7 @@ void main() {
     test('a probe interrupted after the link leaves only names the staging cleanup removes', () async {
       final w = writer(
         posix: true,
-        open: ioOpener(),
+        opener: ioOpener(),
         publish: (tmp, to) async {
           // The link was made, then the process went away.
           File(tmp.path).renameSync(to);

@@ -87,6 +87,15 @@ are optional hooks on `BoxModule` and `BoxContext`; the template lists them in
 a comment and uses none. Without a command, a module's boxes can only be
 created in code.
 
+A module can also list the formats its box exports in (`exportFormats`, from
+`text`, `markdown`, `html`, `png`, `svg` and `original`; none turns Export off
+for the box) and make each file in `export`, from the box's saved data. A
+module that lists `png` gets JPEG and PDF from the host. For a picture of its
+read-only view it calls `ExportContext.renderView()`; the view is then built
+with `BoxContext.offscreen` true, so keep it out of anything that tracks the
+boxes the user works in. To tell the user why an export can't be made, throw a
+`FormatException` with the message from `export`.
+
 ## Testing a module
 
 Copy the template's tests and adapt them. They check:

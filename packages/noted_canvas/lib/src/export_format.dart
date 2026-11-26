@@ -96,11 +96,11 @@ final class ExportContext {
 const int exportMaxSide = 4096;
 
 /// The most pixels an exported raster holds (16 MP).
-const int exportMaxPixels = 16 * 1024 * 1024;
+const int exportMaxPixels = 16 * 1000 * 1000;
 
 /// An image whose size is over this many pixels (100 MP) is never decoded for
 /// a JPEG or PDF export.
-const int exportRefusePixels = 100 * 1024 * 1024;
+const int exportRefusePixels = 100 * 1000 * 1000;
 
 /// The pixel size of a raster of [size] page units at [pixelRatio], scaled
 /// down (keeping the aspect ratio) so that no side is over [exportMaxSide]

@@ -154,8 +154,8 @@ void main() {
         derivePngExport(png: Uint8List(8), name: 'big.png', pdf: true, boxSize: const ui.Size(100, 100)),
         throwsStateError,
       );
-      // 16 MP at most: 4096 x 4096 is exactly the cap.
-      expect(source.decoded, [(4096, 4096)]);
+      // 16 MP at most (16,000,000 pixels): 4000 x 4000.
+      expect(source.decoded, [(4000, 4000)]);
     });
 
     for (final pdf in [false, true]) {
