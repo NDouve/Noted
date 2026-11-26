@@ -437,7 +437,7 @@ void main() {
 
     test('the uncoordinated forms are named only in the three storage files', () {
       const allowed = {'exclusive_publish.dart', 'replace_if_unchanged.dart', 'exclusive_move.dart'};
-      final name = RegExp(r'\b(publishExclusiveUncoordinated|moveExclusiveUncoordinated)\b');
+      final name = RegExp(r'\b(publishExclusiveUncoordinated|moveExclusiveUncoordinated|publishByRename)\b');
       final bad = <String>[];
       for (final e in sources().entries) {
         final file = e.key.replaceAll('\\', '/');

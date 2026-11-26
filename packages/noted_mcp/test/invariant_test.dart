@@ -430,6 +430,36 @@ void main() {
     expect(src, isNot(contains('SecurityContext')));
   });
 
+  test('only exclusive_move.dart assigns the non-link publisher, in any non-test source', () {
+    // Every library of Noted's own code, not only the server's graph: the hook
+    // that lets Android rename instead of link must be set in one place.
+    final assign = RegExp(r'\bnonLinkPublisher\s*=(?!=)');
+    expect(assign.hasMatch('nonLinkPublisher = publishByRename;'), isTrue);
+    expect(assign.hasMatch('x.nonLinkPublisher=f;'), isTrue);
+    expect(assign.hasMatch('if (nonLinkPublisher == null) {}'), isFalse);
+    final roots = [
+      for (final d in ['../noted_core/lib', '../noted_mcp/lib', '../noted_sync/lib', '../../app/lib'])
+        if (Directory(d).existsSync()) Directory(d),
+      if (Directory('../boxes').existsSync())
+        for (final e in Directory('../boxes').listSync())
+          if (e is Directory && Directory('${e.path}/lib').existsSync()) Directory('${e.path}/lib'),
+    ];
+    final seen = <String>[];
+    final assigned = <String>[];
+    for (final dir in roots) {
+      for (final f in dir.listSync(recursive: true)) {
+        if (f is! File || !f.path.endsWith('.dart')) continue;
+        final name = f.path.replaceAll('\\', '/');
+        seen.add(name);
+        final text = f.readAsStringSync().split(RegExp(r'\r?\n')).where((l) => !l.trimLeft().startsWith('//')).join('\n');
+        if (assign.hasMatch(text)) assigned.add(name.split('/').last);
+      }
+    }
+    expect(seen.any((n) => n.endsWith('storage/exclusive_move.dart')), isTrue, reason: 'the walk finds the core');
+    expect(seen.any((n) => n.endsWith('app/lib/main.dart')), isTrue, reason: 'the walk finds the app');
+    expect(assigned, ['exclusive_move.dart']);
+  });
+
   test('the package depends on dart_mcp and noted_core only', () {
     // Line endings follow the checkout (CRLF on a Windows runner).
     final pubspec = File('pubspec.yaml').readAsStringSync().replaceAll('\r\n', '\n');

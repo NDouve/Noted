@@ -57,8 +57,8 @@ enum MoveStrategy {
 /// `@visibleForTesting`: `package:meta` is not a dependency of this package.)
 MoveStrategy? debugMoveStrategy;
 
-/// A test seam: makes the no-replace rename of the Linux and Android path
-/// ([MoveStrategy.native], [MoveStrategy.linuxSyscall]) fail with this errno
+/// A test seam: makes the no-replace rename call
+/// (every strategy but [MoveStrategy.lstatRename]) fail with this errno
 /// without calling. Null in production. Not exported by `noted_core.dart`.
 int? debugNoReplaceErrno;
 
@@ -232,6 +232,11 @@ int _callOs(
   MoveStrategy? forced,
 ) {
   if (forced == MoveStrategy.lstatRename) return _lstatRename(from, to, hook);
+  final fake = debugNoReplaceErrno;
+  if (fake != null) {
+    hook?.call();
+    return fake;
+  }
   if (Platform.isWindows) {
     return _moveWindows(windowsPath(from), windowsPath(to), hook);
   }
@@ -342,11 +347,6 @@ int _moveLinux(
   if (Platform.isAndroid && !hasCall && forced != MoveStrategy.linuxSyscall) {
     // API below 30: never the raw syscall (seccomp may kill the app).
     return _lstatRename(from, to, hook);
-  }
-  final fake = debugNoReplaceErrno;
-  if (fake != null) {
-    hook?.call();
-    return fake;
   }
   final errno = _errnoReader(libc);
   final a = allocCString(from);
