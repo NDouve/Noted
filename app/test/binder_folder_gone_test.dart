@@ -271,7 +271,7 @@ void main() {
   // The seam: the first watcher started on the binder's folder after the folder
   // is back first lets the other instance publish its file, so the watcher
   // never sees the event. The check read the file before, with it absent.
-  test('a folder check that meets another instance replacing the binder file still brings the binder back', skip: 'Reproduced: the binder stays disabled (fileMissing) with its file on disk. _checkFoldersInner only looks at missing binders; see the PM report. Remove the skip with the fix.', () async {
+  test('a folder check that meets another instance replacing the binder file still brings the binder back', () async {
     final d = await setUpBinder();
     final nb = d.nb;
     final good = binderFile().readAsStringSync();

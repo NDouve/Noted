@@ -14957,6 +14957,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           if (onDisk) await _binderBack(b.path);
         } else if (!exists || !(onDisk || await _holdsBinderFile(b.path))) {
           await _binderGone(b);
+        } else if (b.fileMissing && !b.available && onDisk) {
+          // Disabled for want of its file, which is back (see below).
+          await _reopenBinder(b.path);
         }
         continue;
       }
@@ -14964,6 +14967,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         if (exists) await _binderBack(b.path);
       } else if (!exists) {
         await _binderGone(b);
+      } else if (b.fileMissing && !b.available && await File('${b.path}${Platform.pathSeparator}$binderFileName').exists()) {
+        // Disabled for want of its binder file, which is back. The watcher may
+        // have started after the file was published and never see it, so the
+        // check reads the binder again.
+        if (!_disposed) await _reopenBinder(b.path);
       }
     }
     for (final f in _folders.values.toList()) {
