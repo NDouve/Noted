@@ -1048,6 +1048,26 @@ void main() {
       expect(order, ['A', 'B']);
     });
 
+    for (final turnOn in [true, false]) {
+      test('Ask before each write turned ${turnOn ? 'on' : 'off'} while a write waits its turn is respected', () async {
+        final t = await withBox();
+        await t.nb.handleAiLink(req('ba', t.code, content: 'warm up'));
+        await service.setAskBeforeWrite('ba', !turnOn);
+        await t.nb.createPage(); // t.a is closed now
+        final h = holdLookup(t.nb);
+        final a = t.nb.handleAiLink(req('ba', t.code, content: 'A'));
+        final b = t.nb.handleAiLink(req('ba', t.code, content: 'B', mode: AiLinkMode.append));
+        await settle();
+        await service.setAskBeforeWrite('ba', turnOn);
+        h.hold.complete();
+        expect((await a).ok && (await b).ok, isTrue);
+        // On: only B is asked (A came before the change). Off: only A is.
+        expect(asked.where((r) => r.perWrite).map((r) => r.preview), [turnOn ? 'Add: B' : 'Replace with: A']);
+        await t.nb.open(t.a);
+        expect(dataOf(t.nb, 'ba')['text'], 'AB');
+      });
+    }
+
     test('a write to another box is not held by a question open on this one', () async {
       final t = await withBox();
       t.nb.current!.insertBox(box('bb', text: 'old'));

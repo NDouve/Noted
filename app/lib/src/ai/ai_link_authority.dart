@@ -694,9 +694,12 @@ class AiLinkAuthority {
     bool Function() open,
     _BoxTicket ticket,
   ) async {
-    final ask = service.store.askBeforeWrite(req.box);
-    // One question per code: an earlier write of this code is being asked.
-    if (ask && _askingAhead(ticket)) return AiLinkResponse.error(AiLinkCode.busy);
+    // One question per code: an earlier write of this code is being asked. Read
+    // here only to turn a write away at once; whether to ask is read again after
+    // the wait.
+    if (service.store.askBeforeWrite(req.box) && _askingAhead(ticket)) {
+      return AiLinkResponse.error(AiLinkCode.busy);
+    }
     // Wait for the writes ahead, up to the deadline.
     final ahead = ticket.prev;
     if (ahead != null && !ahead.done.isCompleted) {
@@ -711,6 +714,8 @@ class AiLinkAuthority {
     }
     // Nobody is waiting for the answer: nothing else happens.
     if (!open()) return AiLinkResponse.error(AiLinkCode.busy);
+    // The setting as it is now, after the wait (0108).
+    final ask = service.store.askBeforeWrite(req.box);
     return host.aiWriteBox(
       req,
       code,
