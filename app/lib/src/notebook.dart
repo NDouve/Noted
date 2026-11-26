@@ -2184,6 +2184,23 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     for (final f in _folders.values) ...f.unreadable,
   ];
 
+  /// The folders an export must not write into: every storage location (the
+  /// default folder, the standalone folders, the default page folder) and
+  /// binder folder, the recovery folder, the cache, the app folder (where
+  /// `binders.json` is) and the folders of the app-wide templates and of the
+  /// attachments of deleted pages. Everything below them is refused too.
+  List<String> get exportRefusedFolders => [
+    store.directory.path,
+    newPageFolderPath,
+    for (final b in _binders.values) b.path,
+    for (final f in _folders.values) f.path,
+    ?appTemplatesDirectory?.path,
+    ?_recovery?.directory.path,
+    _cacheDir.path,
+    _appDir.path,
+    _deletedAssetsDir.path,
+  ];
+
   /// The binders, in the order of the list.
   List<BinderSection> get binders => List.unmodifiable(_binders.values);
 
