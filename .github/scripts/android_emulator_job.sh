@@ -137,6 +137,11 @@ adb shell am force-stop "$PKG"
 
 # --- 8. One engine: a second MainActivity must not start a second Flutter engine --
 adb logcat -c
+# A clear can leave lines logd still held (API 30 kept the check phase's start),
+# so only lines from this step's own time on are counted. The time is cut to
+# the second; the sleep only keeps this step's own start out of that second.
+since=$(adb shell date +'%m-%d %H:%M:%S.000' | tr -d '\r')
+sleep 1
 adb shell am start -W -n "$PKG/.MainActivity"
 sleep 15
 adb shell am start -W -n "$PKG/.MainActivity" --activity-multiple-task
@@ -146,8 +151,10 @@ sleep 10
 records=$( (adb shell dumpsys activity activities | tr -d '\r' \
   | grep -oE "ActivityRecord\{[0-9a-f]+ u[0-9]+ $PKG/\.MainActivity" || true) \
   | sort -u | wc -l | tr -d ' ')
-starts=$(flutter_log | grep -c NOTED_MAIN_START)
-echo "NOTED_ONE_ENGINE activity_records=$records main_starts=$starts (both must be 1)"
+start_lines=$( (adb logcat -d -T "$since" -s flutter:V 2>/dev/null || true) | tr -d '\r' | grep NOTED_MAIN_START || true)
+starts=$(printf '%s\n' "$start_lines" | grep -c NOTED_MAIN_START || true)
+echo "NOTED_ONE_ENGINE since=$since activity_records=$records main_starts=$starts (both must be 1)"
+printf '%s\n' "$start_lines" | grep NOTED_MAIN_START | sed 's/^/NOTED_ONE_ENGINE_START /' || true
 adb shell dumpsys activity activities | tr -d '\r' | grep 'ActivityRecord{' | sed 's/^/NOTED_ONE_ENGINE_RECORD /'
 adb exec-out screencap -p > "$OUT/one-engine-api$SDK.png"
 if [ "$records" -eq 1 ] && [ "$starts" -eq 1 ]; then
