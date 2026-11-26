@@ -14,6 +14,7 @@ import 'package:noted/src/ai/ai_link_authority.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
+import 'package:noted_core/src/storage/dataless.dart' show debugDatalessPaths, debugMarkDataless, debugUnmarkDataless;
 import 'support/notebook_folder.dart';
 
 import 'support/trouble_world.dart' show FailStore, accessDenied, until;
@@ -1442,6 +1443,58 @@ void main() {
           expect(textOf(saved, 'ba'), 'ai');
           expect(textOf(saved, 'bx'), 'sync');
         });
+      }
+
+      // 0190, R-2: a closed page that is not downloaded is never read and never
+      // taken for gone: the write is answered busy, and nothing is written.
+      for (final point in ['closed-reread', 'closed-before-write']) {
+        for (final stub in [true, false]) {
+          test('the page evicted ${stub ? 'to a stub only' : 'but present'} at $point: busy, nothing is read or written, the download is asked for', () async {
+            addTearDown(() {
+              storedReadObserver = null;
+              debugDatalessPaths = null;
+            });
+            final asked = <String>[];
+            t.nb.askDownload = (p) async {
+              asked.add(p);
+              return null;
+            };
+            final before = file.readAsStringSync();
+            final stubFile = File('${pages.path}/.${t.a}.canvas.icloud');
+            final reads = <String>[];
+            var evicted = false;
+            t.nb.syncHook = (p, _) async {
+              if (p != point || evicted) return;
+              evicted = true;
+              if (stub) {
+                file.deleteSync();
+                stubFile.writeAsStringSync(before); // the bytes are kept to show they are untouched
+              } else {
+                debugMarkDataless(file.path);
+              }
+              storedReadObserver = reads.add;
+            };
+            final r = await t.nb.handleAiLink(req('ba', t.code, content: 'ai'));
+            expect(evicted, isTrue);
+            expect(r, isA<AiLinkError>());
+            expect((r as AiLinkError).code, AiLinkCode.busy, reason: r.message);
+            expect(r.message, contains('still downloading'));
+            expect(reads, isEmpty, reason: 'nothing was read after the eviction');
+            expect(asked.map((p) => p.replaceAll(r'\', '/')), contains(file.path.replaceAll(r'\', '/')));
+            expect(stub ? stubFile.readAsStringSync() : file.readAsStringSync(), before, reason: 'nothing was written');
+            expect(stub ? file.existsSync() : true, stub ? isFalse : isTrue);
+            // Back again: the next write goes through.
+            if (stub) {
+              stubFile.deleteSync();
+              file.writeAsStringSync(before);
+            } else {
+              debugUnmarkDataless(file.path);
+            }
+            t.nb.syncHook = null;
+            final again = await t.nb.handleAiLink(req('ba', t.code, content: 'ai'));
+            expect(again.ok, isTrue, reason: again is AiLinkError ? again.message : '');
+          });
+        }
       }
 
       test('the box becoming conflicted in between: refused, the other writer\'s file stays', () async {

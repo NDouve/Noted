@@ -61,6 +61,7 @@ import '../storage/coordination.dart';
 import '../storage/dataless.dart';
 import '../storage/exclusive_publish.dart';
 import '../storage/replace_if_unchanged.dart';
+import '../storage/stored_read.dart';
 
 /// The template format version this build reads and writes.
 const int templateFormatVersion = 1;
@@ -510,12 +511,22 @@ final class TemplateStore {
         continue;
       }
       if (f is! File || !f.path.endsWith(templateExtension)) continue;
-      if (stubbed || isDataless(f.path)) {
+      if (stubbed) {
         entries.add(UnreadableTemplate(f.path, stillDownloading));
         continue;
       }
       try {
-        final bytes = await f.readAsBytes();
+        final r = await readStored(f.path);
+        if (r is StoredNotDownloaded) {
+          entries.add(UnreadableTemplate(f.path, stillDownloading));
+          continue;
+        }
+        if (r is StoredMissing) {
+          entries.add(UnreadableTemplate(f.path, 'Cannot open file; it is gone'));
+          continue;
+        }
+        if (r is StoredFailed) throw r.error;
+        final bytes = (r as StoredBytes).bytes;
         final text = utf8.decode(bytes);
         entries.add(ReadableTemplate(f.path, NotedTemplate.parse(text), ContentIdentity.ofBytes(bytes)));
       } on TemplateFormatException catch (e) {

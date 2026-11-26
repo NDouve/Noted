@@ -1348,6 +1348,25 @@ void main() {
           expect(s.nb.binders.single.unreadable.map((u) => '${u.path} ${u.reason}').toList(), listed);
         });
 
+        // 0190, R-2: a chosen file that turns into a stub is not gone, so the
+        // choice stays and no duplicate is promoted in its place.
+        test('a chosen file seen gone once and then a stub only is not confirmed gone', () async {
+          final dir = await Directory('${root.path}/Elsewhere').create();
+          final s = await setup(dir, dir);
+          await leave(s);
+          final text = File(s.copy).readAsStringSync();
+          File(s.copy).deleteSync();
+          await s.nb.checkFile(s.copy); // seen gone once
+          final stub = File('${dir.path}/.copy-of-${s.id}.canvas.icloud')..writeAsStringSync('');
+          await s.nb.checkFolders();
+          expect(s.nb.pageTitleOf(s.id), isNull, reason: 'the duplicate was not promoted');
+          expect(reasons(s.nb), contains('duplicate page id ${s.id}'));
+          stub.deleteSync();
+          File(s.copy).writeAsStringSync(text);
+          await s.nb.checkFolders();
+          expect(s.nb.pageTitleOf(s.id), 'Copy', reason: 'the chosen file is back');
+        });
+
         test('a page opened as a preview while the confirming read runs keeps its choice', () async {
           final dir = await Directory('${root.path}/Elsewhere').create();
           final s = await setup(dir, dir, recovery: true);

@@ -296,6 +296,7 @@ import 'support/binder_seams.dart';
 import 'support/real_io.dart' show realIoUntil;
 import 'support/page_save.dart';
 import 'support/notebook_folder.dart';
+import 'support/page_reads.dart';
 
 // ---------------------------------------------------------------------------
 // Settings
@@ -4028,7 +4029,7 @@ extension _XSteps on _Run {
   }
 
   void _xReset() {
-    PageStore.fileReadObserver = null;
+    storedReadObserver = null;
     Notebook.placeholderMarksForTest = {};
     Notebook.unhydratableForTest = {};
     Notebook.syncRootOfForTest = null;
@@ -4342,10 +4343,10 @@ extension _XSteps on _Run {
     final reads = <String>[];
     Notebook.placeholderMarksForTest = {for (final p in sub) fileStamp(_pathOf(p))!};
     Notebook.syncRootOfForTest = (_) => const SyncRoot(1, 1);
-    PageStore.fileReadObserver = reads.add;
+    storedReadObserver = pageReadsInto(reads);
     final held = model[id]!.parent != null;
     final e = await _xMove(id, to);
-    PageStore.fileReadObserver = null;
+    storedReadObserver = null;
     expect(e, isNull, reason: 'a dehydrated page moves by rename inside one root: $e');
     expect(reads.where((r) => sub.any((p) => r.endsWith('$p.canvas'))), isEmpty, reason: 'no page content was read: $reads');
     for (final p in sub) {
@@ -4380,12 +4381,12 @@ extension _XSteps on _Run {
     final victim = sub[1 + _xrng.nextInt(sub.length - 1)];
     final y = _newBox(_text('sync'));
     final reads = <String>[];
-    PageStore.fileReadObserver = reads.add;
+    storedReadObserver = pageReadsInto(reads);
     // A newer version of a subpage lands at the source before its turn.
     final undo = _atRename(1, () => _externalWriteSync(victim, _disk(victim).insertNode(y)));
     final e = await _xMove(id, to);
     undo();
-    PageStore.fileReadObserver = null;
+    storedReadObserver = null;
     expect(e, isNull, reason: 'the move failed: $e');
     model[victim]!.boxes[y.id] = _val(y);
     expect(
@@ -4938,7 +4939,7 @@ extension _XSteps on _Run {
     ];
     if (closed.isEmpty) return null;
     final reads = <String>[];
-    PageStore.fileReadObserver = reads.add;
+    storedReadObserver = pageReadsInto(reads);
     List<String> readOf(String p) => reads.where((r) => r.endsWith('$p.canvas')).toList();
     for (final p in closed) {
       await nb.checkFile(_pathOf(p));
@@ -5031,10 +5032,10 @@ extension _XSteps on _Run {
         expect(_xAside(p, loc), hasLength(1), reason: 'the folder is renamed beside the page');
         expect(_xTrash(p), isEmpty, reason: 'not in deleted-attachments');
         expect(Directory(_assetsPath(p)).existsSync(), isFalse);
-        PageStore.fileReadObserver = reads.add;
+        storedReadObserver = pageReadsInto(reads);
         nb.discardDeleted(deleted);
         await _xQuiet();
-        PageStore.fileReadObserver = null;
+        storedReadObserver = null;
         // (The deleted page's own file may be read once by 0183's re-check of a
         // consumed-copy mark that letting go of the delete starts; that is no read of
         // the expiry's.)

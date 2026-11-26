@@ -13,6 +13,7 @@ import 'package:noted/main.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
+import 'package:noted_core/src/storage/dataless.dart' show debugDatalessPaths, debugMarkDataless, debugUnmarkDataless;
 
 import 'support/busy_retry.dart';
 import 'support/page_save.dart';
@@ -285,4 +286,36 @@ void main() {
       },
     );
   }
+
+  // 0190, R-2: the original is deleted only while the copy is read and holds the
+  // page. A copy that is not downloaded is not read, so the original is kept.
+  test('12. delete the original while the copy is not downloaded: the original is kept', () async {
+    Notebook.forceCopyMoveForTest = true;
+    addTearDown(() {
+      Notebook.forceCopyMoveForTest = false;
+      debugDatalessPaths = null;
+    });
+    final id = nb.currentId!;
+    final box = noteBox('base');
+    await busyRetry(() => PageStore(dir).save(onDisk(id).insertNode(box)));
+    await nb.createPage();
+    await nb.checkFile(pathOf(id));
+    OriginalsKeptException? kept;
+    try {
+      await nb.moveToFolder(id, elsewhere.path);
+    } on OriginalsKeptException catch (e) {
+      kept = e;
+    }
+    expect(kept, isNotNull);
+    final copy = '${elsewhere.path}$sep$id.canvas';
+    debugMarkDataless(copy);
+    await expectLater(
+      nb.deleteOriginals(kept!.move),
+      throwsA(isA<NotebookException>().having((e) => e.message, 'message', contains('was kept'))),
+    );
+    expect(File(pathOf(id)).existsSync(), isTrue, reason: 'the original is kept');
+    debugUnmarkDataless(copy);
+    await nb.deleteOriginals(kept.move);
+    expect(File(pathOf(id)).existsSync(), isFalse, reason: 'deleted once the copy is read and holds the page');
+  });
 }

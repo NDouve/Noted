@@ -7,7 +7,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_core/noted_core.dart';
-import 'package:noted_core/src/storage/dataless.dart' show debugDatalessAbi, debugResetDataless;
+import 'package:noted_core/src/storage/dataless.dart' show debugDatalessAbi, debugDatalessPaths, debugMarkDataless, debugResetDataless;
 import 'support/coordination_support.dart';
 import 'support/page_save.dart';
 
@@ -511,6 +511,26 @@ void main() {
       debugDatalessAbi = null;
       expect(File('${dir.path}/p1.canvas').readAsStringSync(), text);
     }, skip: (Platform.isMacOS || Platform.isIOS) ? 'a real lstat exists: nothing fails closed' : null);
+
+    test('a present dataless page file (the seam) is listed and not read', () async {
+      final text = writePage(NotedPage.create(PageMeta.create(id: 'p1', title: 'One', order: 0)));
+      File('${dir.path}/p1.canvas').writeAsStringSync(text);
+      debugMarkDataless('${dir.path}/p1.canvas');
+      addTearDown(() => debugDatalessPaths = null);
+      final store = PageStore(dir);
+      expect((await store.scan()).single, isA<UnreadablePage>().having((e) => e.reason, 'reason', stillDownloading));
+      await expectLater(store.readText('p1'), throwsA(isA<StorageBusy>()));
+    });
+
+    test('a page file that is not UTF-8 is listed unreadable, the others normally', () async {
+      final good = NotedPage.create(PageMeta.create(id: 'good', title: 'G', order: 0));
+      File('${dir.path}/good.canvas').writeAsStringSync(writePage(good));
+      File('${dir.path}/bad.canvas').writeAsBytesSync([0x7b, 0xff, 0xfe, 0x7d]);
+      final entries = await PageStore(dir).scan();
+      expect(entries, hasLength(2));
+      expect(entries.whereType<ReadablePage>().single.meta.id, 'good');
+      expect(entries.whereType<UnreadablePage>().single.path, endsWith('bad.canvas'));
+    });
 
     test('saving over a stub-only page is busy', () async {
       final page = NotedPage.create(PageMeta.create(id: 'p1', title: 'One', order: 0));

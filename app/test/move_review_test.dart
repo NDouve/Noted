@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // The review of a move by rename (design 2026-11-14-02): what the first build
-// left out. Reads are counted by `PageStore.fileReadObserver`, so a read
+// left out. Reads are counted by `storedReadObserver`, so a read
 // anywhere fails a "no read" test.
 
 import 'dart:io';
@@ -13,6 +13,7 @@ import 'package:noted/main.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
 import 'support/notebook_folder.dart';
+import 'support/page_reads.dart';
 
 void main() {
   late Directory root;
@@ -29,12 +30,12 @@ void main() {
     opened = [];
     reads = [];
     hook = null;
-    PageStore.fileReadObserver = reads.add;
+    storedReadObserver = pageReadsInto(reads);
     Notebook.pairLockLimit = const Duration(milliseconds: 150);
     Notebook.pairRetryDelay = const Duration(milliseconds: 10);
   });
   tearDown(() async {
-    PageStore.fileReadObserver = null;
+    storedReadObserver = null;
     noFileStampsForTest = false;
     Notebook.pairLockLimit = const Duration(seconds: 5);
     Notebook.pairRetryDelay = const Duration(milliseconds: 500);

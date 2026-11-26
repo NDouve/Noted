@@ -47,8 +47,12 @@ export 'src/storage/coordination.dart' hide folderOf;
 export 'src/storage/dataless.dart'
     hide
         debugDatalessAbi,
+        debugDatalessKey,
+        debugDatalessPaths,
         debugDatalessLookupFailure,
+        debugMarkDataless,
         debugResetDataless,
+        debugUnmarkDataless,
         sfDataless;
 export 'src/storage/exclusive_move.dart'
     hide
@@ -72,5 +76,6 @@ export 'src/storage/local_change.dart';
 export 'src/storage/page_store.dart';
 export 'src/storage/quick_xor_hash.dart';
 export 'src/storage/replace_if_unchanged.dart';
+export 'src/storage/stored_read.dart';
 export 'src/template/template.dart';
 export 'src/tree/page_tree.dart';

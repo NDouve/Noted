@@ -14,6 +14,7 @@ import 'exclusive_move.dart';
 import 'exclusive_publish.dart';
 import 'file_stamp.dart';
 import 'replace_if_unchanged.dart';
+import 'stored_read.dart';
 
 /// The result of scanning one page file.
 sealed class PageEntry {
@@ -71,11 +72,6 @@ class PageStore {
   // Adopted files the last scan read as a valid page with another id.
   Map<String, String> _released = const {};
   static int _tmpCounter = 0;
-
-  /// Called with the path of every page file this store reads: a scan, [load],
-  /// [readText] and the read inside [saveIfUnchanged]. A seam for tests that
-  /// count reads; production code leaves it null.
-  static void Function(String path)? fileReadObserver;
 
   /// The adopted files (page id to path) that the last [scan] read as a valid
   /// page holding another id. They are not ranked for the id they were adopted
@@ -149,15 +145,25 @@ class PageStore {
       }
       if (f is! File || !f.path.endsWith(extension)) continue;
       // Never read a file that is not downloaded (a read would download it).
-      if (stubbed || isDataless(f.path)) {
+      if (stubbed) {
         datalessNames.add(_pathKeyName(_name(f.path)));
         entries.add(UnreadablePage(f.path, stillDownloading));
         continue;
       }
       try {
         final before = stamps ? fileStamp(f.path) : null;
-        fileReadObserver?.call(f.path);
-        final page = readPage(await f.readAsString());
+        final r = await readStored(f.path);
+        if (r is StoredNotDownloaded) {
+          datalessNames.add(_pathKeyName(_name(f.path)));
+          entries.add(UnreadablePage(f.path, stillDownloading));
+          continue;
+        }
+        if (r is StoredMissing) {
+          entries.add(UnreadablePage(f.path, 'Cannot open file; it is gone'));
+          continue;
+        }
+        if (r is StoredFailed) throw r.error;
+        final page = readPage((r as StoredBytes).text);
         read[_name(f.path)] = (f.path, page);
         if (stamps) {
           afterFileRead?.call(f.path);
@@ -269,9 +275,10 @@ class PageStore {
     for (final cand in conflictCopyOriginalNames(_name(copyPath))) {
       final other = File('$dir${Platform.pathSeparator}$cand');
       try {
-        if (!await other.exists()) continue;
-        if (isDataless(other.path)) continue;
-        if (readPage(await other.readAsString()).id != copy.id) continue;
+        // Not downloaded, gone or failed: not a candidate.
+        final r = await readStored(other.path);
+        if (r is! StoredBytes) continue;
+        if (readPage(r.text).id != copy.id) continue;
       } on PageFormatException {
         continue;
       } on FileSystemException {
@@ -327,11 +334,16 @@ class PageStore {
   /// downloaded.
   Future<String> readText(String pageId) async {
     final path = _pathFor(pageId);
-    if (isDataless(path)) {
-      throw StorageBusy(StorageBusyReason.dataless, [path]);
+    switch (await readStored(path)) {
+      case StoredBytes(:final text):
+        return text;
+      case StoredNotDownloaded():
+        throw StorageBusy(StorageBusyReason.dataless, [path]);
+      case StoredMissing():
+        throw PathNotFoundException(path, const OSError('No such file or directory', 2));
+      case StoredFailed(:final error):
+        throw error;
     }
-    fileReadObserver?.call(path);
-    return await File(path).readAsString();
   }
 
   /// Writes [page] as a new file, and only if no file is at its path at the
@@ -424,7 +436,7 @@ class PageStore {
         expected,
         beforeMoveAside: beforeMoveAside,
         afterRead: () {
-          fileReadObserver?.call(path);
+          storedReadObserver?.call(path);
           afterRead?.call();
         },
         beforePublish: () {

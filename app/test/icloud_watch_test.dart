@@ -83,7 +83,7 @@ void main() {
       final nb = Notebook(PageStore(w.drive), buildModules());
       w.notebooks.add(nb);
       await nb.load();
-      expect(nb.requestDownload, isNull);
+      expect(nb.askDownload, isNull);
       expect(nb.cloudVersionIssues, isEmpty);
     });
   });
@@ -191,7 +191,7 @@ void main() {
       expect(readPage(file.readAsStringSync()).node(box.id), isNotNull, reason: 'the copy\'s box is on the page');
     });
 
-    test('a copy whose merge was refused for a passing reason (busy) is merged when its original is looked at again, with no relaunch', () async {
+    test("a copy whose original is not downloaded at the merge (the open page) is merged on the original's event, with no relaunch", () async {
       final f = await w.picked(platform: CloudPlatform.ios);
       await externalPage('gone1');
       final nb = w.notebook(f);
@@ -210,20 +210,21 @@ void main() {
       // The original is evicted while the merge reads it: the merge is refused as busy (dataless).
       final original = file.readAsStringSync();
       var evicted = false;
-      PageStore.fileReadObserver = (p) {
-        if (evicted || !p.endsWith('gone1.canvas')) return;
+      var reads = 0;
+      storedReadObserver = (p) {
+        // The first read of the original finds it (the copy's original); the second is the merge's.
+        if (evicted || !p.endsWith('gone1.canvas') || ++reads < 2) return;
         evicted = true;
         file.deleteSync();
         File(w.path('.gone1.canvas.icloud')).writeAsStringSync('');
       };
-      addTearDown(() => PageStore.fileReadObserver = null);
+      addTearDown(() => storedReadObserver = null);
       await w.channel.emit('changed', {'path': copy.path});
-      await waitFor(() => nb.unreadable.any((u) => u.reason.startsWith('Could not be merged into its page')), what: 'the refused merge');
-      PageStore.fileReadObserver = null;
+      await waitFor(() => nb.unreadable.any((u) => u.reason == PageStore.copyOfDatalessReason), what: 'the refused merge');
+      storedReadObserver = null;
       expect(evicted, isTrue, reason: 'the seam fired');
-      final row = nb.unreadable.where((u) => u.reason.startsWith('Could not be merged into its page')).toList();
+      final row = nb.unreadable.where((u) => u.reason == PageStore.copyOfDatalessReason).toList();
       expect(row, hasLength(1));
-      expect(row.single.reason, contains('The folder is busy'));
       expect(copy.existsSync(), isTrue);
       // The original materialises: the copy merges without a relaunch.
       File(w.path('.gone1.canvas.icloud')).deleteSync();
@@ -258,6 +259,34 @@ void main() {
         ..writeAsStringSync(writePage(readPage(original).insertNode(box2('00000000000000c3', 'from the copy'))));
       return (nb: nb, file: file, copy: copy, original: original);
     }
+
+    // The same on a closed page: the evicted read is the closed merge's read of the
+    // original, which is a passing failure, and the original's event merges the copy.
+    test("on a closed page the original evicted at the merge's read: the copy waits as still downloading and merges on the original's event", () async {
+      final f = await w.picked(platform: CloudPlatform.ios);
+      final s = await withCopy(f);
+      var reads = 0;
+      var evicted = false;
+      storedReadObserver = (p) {
+        // The first read of the original finds it; the second is the closed merge's.
+        if (evicted || !p.endsWith('gone1.canvas') || ++reads < 2) return;
+        evicted = true;
+        s.file.deleteSync();
+        File(w.path('.gone1.canvas.icloud')).writeAsStringSync('');
+      };
+      addTearDown(() => storedReadObserver = null);
+      await w.channel.emit('changed', {'path': s.copy.path});
+      await waitFor(() => s.nb.unreadable.any((u) => u.reason == PageStore.copyOfDatalessReason), what: 'the copy to wait');
+      storedReadObserver = null;
+      expect(evicted, isTrue, reason: 'the seam fired');
+      expect(s.copy.existsSync(), isTrue);
+      File(w.path('.gone1.canvas.icloud')).deleteSync();
+      s.file.writeAsStringSync(s.original);
+      await w.channel.emit('changed', {'path': s.file.path});
+      await waitFor(() => !s.copy.existsSync(), what: 'the copy to merge');
+      await waitFor(() => s.nb.unreadable.isEmpty, what: 'the row to go');
+      expect(readPage(s.file.readAsStringSync()).node('00000000000000c3'), isNotNull);
+    });
 
     test('a merge that would drop a node of the original writes nothing, stays listed, and a folder check does not retry or clear it', () async {
       final f = await w.picked(platform: CloudPlatform.ios);
@@ -303,6 +332,25 @@ void main() {
       expect(s.nb.current!.page.node('00000000000000a1'), isNotNull);
       expect(s.file.readAsStringSync(), s.original);
       expect(s.copy.existsSync(), isTrue);
+    });
+
+    // A passing reason other than not downloaded (the folder is busy): the copy is
+    // retried on the original's own event, with no folder check (t2b).
+    test("a copy refused as busy is merged on the original's event, with no folder check", () async {
+      final f = await w.picked(platform: CloudPlatform.ios);
+      final s = await withCopy(f);
+      final c = ScriptedCoordinator();
+      unregisterCoordinator(w.drive.path);
+      registerScripted(w.drive, c);
+      c.refuse = (write) => true;
+      await w.channel.emit('changed', {'path': s.copy.path});
+      await waitFor(() => s.nb.unreadable.any((u) => u.reason.startsWith('Could not be merged into its page')), what: 'the refused merge');
+      expect(s.copy.existsSync(), isTrue);
+      c.refuse = null;
+      await w.channel.emit('changed', {'path': s.file.path});
+      await waitFor(() => !s.copy.existsSync(), what: 'the copy to merge');
+      await waitFor(() => s.nb.unreadable.isEmpty, what: 'the row to go');
+      expect(readPage(s.file.readAsStringSync()).node('00000000000000c3'), isNotNull);
     });
 
     test('the original never sends an event: the folder check merges a copy refused as busy', () async {

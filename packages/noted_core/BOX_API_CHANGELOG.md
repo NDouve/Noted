@@ -8,6 +8,8 @@ version.
 
 Versions are listed newest first.
 
+Host-only (not the Box API), run 2026-11-25-01, task 3a (evicted reads, codex area-data-integrity R-2; 0190): new `stored_read.dart` (`readStored`, `readStoredSync`, `openStoredRead`, `openStoredFile`, `openStoredFileSync`, `StoredRead` with `StoredBytes`, `StoredNotDownloaded`, `StoredMissing` and `StoredFailed`, `StoredOpen`, `DownloadAsk`, `notDownloaded`, `askSafely`, `storedReadObserver`), exported by `noted_core.dart` and in no import graph of `noted_core_read` or the MCP server. `PageStore.fileReadObserver` is removed (it is `storedReadObserver`). No module-facing change, no version bump.
+
 Host-only (not the Box API), run 2026-11-25-01, task 1 (Android publishes without hard links): `useRenamePublishOnAndroid()` is exported by `noted_core.dart`; the host calls it once at start. On Android it registers `publishByRename`, which `publishExclusive` then uses (`link` first; if SELinux refuses it, `renameat2(RENAME_NOREPLACE)`, else an lstat and `rename(2)` in one synchronous call). `publishByRename`, `nonLinkPublisher` and the test seams (`debugLinkErrno`, `debugLinkCalls`, `debugNoReplaceErrno`, `debugPublishAsAndroid`) are hidden. No module-facing change, no version bump.
 
 Host-only (not the Box API), run 2026-11-23-01, document import stage A: `PageCanvasState.captureImportTarget`, the public opaque `ImportTarget` (and `ImportInsert`, `importStoppedNotice`) in `import_target.dart`, and `PageCanvasState.insertImportInto` (not on `CommandHost`; `insertFiles` is unchanged). The note module implements the existing `createFromFile` for `<stem>.noted-blocks.json` and `.md`, with `fileAffinity` still 0. No module-facing member changed; no version bump.

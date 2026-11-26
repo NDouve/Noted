@@ -18,8 +18,10 @@ import 'package:noted/src/recovery_store.dart';
 import 'package:noted/src/save_trouble.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
+import 'package:noted_core/src/storage/dataless.dart' show debugDatalessPaths, debugMarkDataless, debugUnmarkDataless;
 import 'support/page_save.dart';
 import 'support/notebook_folder.dart';
+import 'support/page_reads.dart';
 
 Map<String, Object?> doc(String text) => {
   'document': {
@@ -2374,6 +2376,188 @@ void main() {
         return (await entries()).isEmpty;
       }, 'the entry to be retired');
     }, timeout: const Timeout(Duration(minutes: 1)));
+
+    // 0190, R-2: a page that is not downloaded is never read and never taken for
+    // absent, so a re-check that finds it so keeps the entry (0183).
+    group('(R-2) a file that is not downloaded', () {
+      // Evicts the file at [path]: to a stub only, or present and dataless (the
+      // seam). Returns what brings it back.
+      void Function() evict(String path, {required bool stub}) {
+        final f = File(path);
+        if (stub) {
+          final text = f.readAsStringSync();
+          final s = File('${f.parent.path}$sep.${f.uri.pathSegments.last}.icloud');
+          f.deleteSync();
+          s.writeAsStringSync('');
+          return () {
+            s.deleteSync();
+            f.writeAsStringSync(text);
+          };
+        }
+        debugMarkDataless(path);
+        return () => debugUnmarkDataless(path);
+      }
+
+      String slashes(String s) => s.replaceAll(r'\', '/');
+
+      setUp(() {
+        addTearDown(() {
+          storedReadObserver = null;
+          debugDatalessPaths = null;
+        });
+      });
+
+      for (final stub in [true, false]) {
+        test('the page evicted ${stub ? 'to a stub only' : 'but present'} at the re-check: the entry and the copy\'s boxes stay, nothing is read, the download is asked for', () async {
+          await start();
+          await withCopy();
+          final asked = <String>[];
+          nb.askDownload = (p) async {
+            asked.add(p);
+            return null;
+          };
+          await nb.checkFile(copy);
+          expect(ids(), {box.id, extra.id});
+          expect(await entries(), hasLength(1));
+          void Function()? back;
+          final reads = <String>[];
+          final hook = nb.syncHook;
+          nb.syncHook = (p, path) async {
+            await hook?.call(p, path);
+            if (p != 'copy-recheck' || back != null) return;
+            back = evict(path, stub: stub);
+            storedReadObserver = pageReadsInto(reads);
+          };
+          await recheck();
+          expect(back, isNotNull);
+          expect(await entries(), hasLength(1), reason: 'the entry holds the only kept boxes');
+          expect(reads, isEmpty, reason: 'nothing was read');
+          expect(asked.map(slashes), contains(slashes(pathOf(id))));
+          back!();
+          await recheck();
+          await recheck();
+          expect(await entries(), isEmpty, reason: 'retired once the page is back and holds the copy');
+        });
+      }
+
+      test('the page evicted between the re-check\'s read and the redo\'s read of the original: the entry stays and the re-check has not failed', () async {
+        await start();
+        await withCopy();
+        await nb.checkFile(copy);
+        expect(await entries(), hasLength(1));
+        revert(); // the file lacks the copy: the re-check merges it again
+        var reads = 0;
+        void Function()? back;
+        storedReadObserver = (p) {
+          if (back != null || !p.endsWith('$id.canvas')) return;
+          if (++reads == 2) back = evict(p, stub: true); // the redo's read
+        };
+        await recheck();
+        expect(back, isNotNull, reason: 'the second read of the page was reached');
+        expect(await entries(), hasLength(1));
+        expect(nb.consumedFailedForTest.values, everyElement(isFalse), reason: 'a page that is not downloaded is not a failed re-check');
+        back!();
+        await recheck();
+        await recheck();
+        expect(await entries(), isEmpty);
+        expect(ids(), {box.id, extra.id});
+      });
+
+      test('N4: a stub-only page that is listed nowhere keeps its entry', () async {
+        await start();
+        await withCopy();
+        await nb.checkFile(copy);
+        expect(await entries(), hasLength(1));
+        // The eviction looks like a delete first: the app sees the file gone and
+        // forgets the page; the stub shows up after.
+        final text = File(pathOf(id)).readAsStringSync();
+        File(pathOf(id)).deleteSync();
+        await nb.checkFile(pathOf(id));
+        expect(nb.pageTitleOf(id), isNull, reason: 'the page is listed nowhere');
+        File('${dir.path}$sep.$id.canvas.icloud').writeAsStringSync('');
+        void back() {
+          File('${dir.path}$sep.$id.canvas.icloud').deleteSync();
+          File(pathOf(id)).writeAsStringSync(text);
+        }
+        await recheck();
+        expect(await entries(), hasLength(1), reason: 'a stub is not a deleted page');
+        back();
+        await nb.checkFolders();
+        await recheck();
+        await recheck();
+        expect(await entries(), isEmpty);
+      });
+
+      test('a start with a merged copy\'s entry and its page a stub only: the entry stays, and retires once the page is back', () async {
+        await start();
+        await withCopy();
+        await nb.checkFile(copy);
+        expect(await entries(), hasLength(1));
+        nb.dispose();
+        final back = evict(pathOf(id), stub: true);
+        counting = CountingStore(dir);
+        nb = makeNotebook();
+        await nb.load();
+        expect(await entries(), hasLength(1), reason: 'a stub is not a deleted page');
+        back();
+        await nb.recoverNowForTest();
+        expect(ids(), {box.id, extra.id});
+        expect(await entries(), isEmpty);
+      });
+
+      test('at quit with the page back as a stub only: the entry stays', () async {
+        await start();
+        await withCopy();
+        await nb.checkFile(copy);
+        await nb.delete(id);
+        File('${dir.path}$sep.$id.canvas.icloud').writeAsStringSync('');
+        await nb.discardPendingDelete();
+        expect(await entries(), hasLength(1));
+      });
+
+      test('the folder gone at the re-check keeps the entry', () async {
+        await start();
+        await withCopy();
+        await nb.checkFile(copy);
+        final away = '${root.path}${sep}away';
+        dir.renameSync(away);
+        await recheck();
+        expect(await entries(), hasLength(1), reason: 'a folder that is not there says nothing about the page');
+        Directory(away).renameSync(dir.path);
+        await recheck();
+        await recheck();
+        expect(await entries(), isEmpty);
+      });
+
+      for (final stub in [true, false]) {
+        test('the copy evicted ${stub ? 'to a stub only' : 'but present'} at copy-merged is not deleted; it is merged and deleted once it is back', () async {
+          await start();
+          await withCopy();
+          final asked = <String>[];
+          nb.askDownload = (p) async {
+            asked.add(p);
+            return null;
+          };
+          void Function()? back;
+          final hook = nb.syncHook;
+          nb.syncHook = (p, path) async {
+            await hook?.call(p, path);
+            if (p != 'copy-merged' || back != null) return;
+            back = evict(path, stub: stub);
+          };
+          await nb.checkFile(copy);
+          expect(back, isNotNull);
+          final copyFile = File(stub ? '${dir.path}$sep.${copy.split(sep).last}.icloud' : copy);
+          expect(copyFile.existsSync(), isTrue, reason: 'the copy is kept');
+          expect(asked.map(slashes), contains(slashes(copy)));
+          expect(await entries(), isEmpty, reason: 'nothing was kept or retired for a copy that was not read');
+          back!();
+          await nb.checkFile(copy);
+          expect(File(copy).existsSync(), isFalse, reason: 'merged and deleted');
+          expect(ids(), {box.id, extra.id});
+        });
+      }
+    });
   });
 
   // Area R-1: every write of a page file is a compare-and-swap, so a version a

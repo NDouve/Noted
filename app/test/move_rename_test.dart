@@ -15,6 +15,7 @@ import 'package:noted/main.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
 import 'support/notebook_folder.dart';
+import 'support/page_reads.dart';
 
 void main() {
   late Directory root;
@@ -30,13 +31,13 @@ void main() {
     extra = await Directory('${root.path}/Elsewhere').create();
     opened = [];
     reads = [];
-    PageStore.fileReadObserver = reads.add; // every read of a page file, anywhere
+    storedReadObserver = pageReadsInto(reads); // every read of a page file, anywhere
     hook = null;
     Notebook.pairLockLimit = const Duration(milliseconds: 150);
     Notebook.pairRetryDelay = const Duration(milliseconds: 10);
   });
   tearDown(() async {
-    PageStore.fileReadObserver = null;
+    storedReadObserver = null;
     Notebook.pairLockLimit = const Duration(seconds: 5);
     Notebook.pairRetryDelay = const Duration(milliseconds: 500);
     for (final nb in opened) {

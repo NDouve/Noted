@@ -7,7 +7,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:noted_core/noted_core.dart';
-import 'package:noted_core/src/storage/dataless.dart' show debugDatalessAbi, debugResetDataless;
+import 'package:noted_core/src/storage/dataless.dart' show debugDatalessAbi, debugDatalessPaths, debugMarkDataless, debugResetDataless;
 
 void main() {
   late Directory dir;
@@ -92,6 +92,7 @@ void main() {
     tearDown(() {
       debugDatalessAbi = null;
       debugResetDataless();
+      debugDatalessPaths = null;
     });
 
     test('a stub-only binder file is present: unreadable while downloading, never missing, never created over', () async {
@@ -113,6 +114,25 @@ void main() {
       expect(r, isA<BinderRefused>());
       expect((r as BinderRefused).kind, BinderRefusal.inUse);
       expect(r.reason, contains('still downloading'));
+    });
+
+    test('a present dataless binder file (the seam) is unreadable while downloading, and an update is busy', () async {
+      final made = Binder.create(title: 'x', color: binderPalette.first);
+      await store.create(made);
+      debugMarkDataless(store.file.path);
+      final r = await store.read();
+      expect((r as BinderUnreadable).reason, stillDownloading);
+      expect(store.fileHoldsBinderSync(made.id), isFalse);
+      final u = await store.update(
+        BinderDelta(binderId: made.id, kind: BinderDeltaKind.cover, apply: (x) => x.withTitle('New')),
+      );
+      expect((u as BinderRefused).kind, BinderRefusal.inUse);
+      expect(u.reason, contains('still downloading'));
+    });
+
+    test('a binder file that is not UTF-8 is unreadable, not a crash', () async {
+      store.file.writeAsBytesSync([0x7b, 0xff, 0xfe, 0x7d]);
+      expect(await store.read(), isA<BinderUnreadable>());
     });
 
     test('a dataless binder file is not read', () async {

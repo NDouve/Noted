@@ -167,6 +167,11 @@ class _LandedFile {
 }
 
 // A save of a closed page was refused; [response] says why.
+/// A file the work needs is not downloaded: it is asked for, and the work waits.
+class _NotDownloaded implements Exception {
+  const _NotDownloaded();
+}
+
 class _SaveRefused implements Exception {
   const _SaveRefused(this.response);
 
@@ -823,7 +828,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _chain.onDetachedJobEnded = _oldJobEnded;
     icloud?.onRootWritable = _rootWritable;
     // A file that is not downloaded is asked for through the platform (R5.5).
-    if (icloud != null && icloud!.active) requestDownload = icloud!.startDownloading;
+    if (icloud != null && icloud!.active) askDownload = icloud!.askDownload;
     icloud?.addListener(_notifyLoad);
     // The platform's presenter reports changes (M8) and the landing of iCloud
     // versions reports what it did (R5.8).
@@ -1370,10 +1375,19 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
   }
 
-  // Tells the read observer of a page file about to be read; returns [path].
-  static String _obs(String path) {
-    PageStore.fileReadObserver?.call(path);
-    return path;
+  // Every read of a stored file goes through the one routed read (0190): a file
+  // that is not downloaded is asked for and never read. Only a retire, delete or
+  // overwrite that follows `StoredBytes` or `StoredMissing` may go ahead.
+  Future<StoredRead> _read(String path) => readStored(path, ask: askDownload);
+  StoredRead _readSync(String path) => readStoredSync(path, ask: askDownload);
+
+  // The text of a read that gave bytes, else null (not downloaded, gone, failed).
+  static String? _bytesText(StoredRead r) => r is StoredBytes ? r.text : null;
+
+  // Whether the file at [path] is downloaded and holds exactly [want].
+  bool _readHolds(String path, List<int> want) {
+    final r = _readSync(path);
+    return r is StoredBytes && listEquals(r.bytes, want);
   }
 
   void _emitDeleted(String path) {
@@ -1495,6 +1509,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// each is parked (sync kept putting an older file back).
   @visibleForTesting
   Map<String, bool> get consumedCopiesForTest => {for (final m in _consumedCopies.values) m.gen: m.parked};
+
+  /// Test seam: whether the last re-check of each consumed copy failed.
+  @visibleForTesting
+  Map<String, bool> get consumedFailedForTest => {for (final m in _consumedCopies.values) m.gen: m.failed};
+
+  /// Test seam: whether each consumed copy is being deleted.
+  @visibleForTesting
+  Map<String, bool> get consumedDeletingForTest => {for (final m in _consumedCopies.values) m.gen: m.deleting};
+
+  /// Test seam: whether a delete that Undo can still reach holds page [id].
+  @visibleForTesting
+  bool deleteHoldsForTest(String id) => _deleteHolds(id);
 
   // Kept `<id>.assets` folders that couldn't be landed, or whose page isn't
   // there, by the folder's path: why (0098).
@@ -1928,10 +1954,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// opening it gives the preview.
   bool isBusy(String id) => _busy.containsKey(id);
 
-  /// Asks the platform to download the file at the path (the page file a save
-  /// found not downloaded). A no-op until the Apple channel exists (cloud
-  /// parity step 5); the save is kept in recovery and tried again meanwhile.
-  void Function(String path)? requestDownload;
+  /// Asks the platform to download the file at the path (a page file a read or a
+  /// save found not downloaded); null off Apple. Every read of a stored file
+  /// passes it to the routed read, which asks for a file it won't read (0190);
+  /// the work waits and a change event runs it again. An ask that fails is
+  /// dropped (see [askSafely]).
+  DownloadAsk? askDownload;
 
   /// Test seam: called at named points of a conflict-copy merge (`copy-merged`
   /// just before the copy is revalidated for deletion, `original-read` just
@@ -2989,9 +3017,14 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final NotedPage page;
     final String text;
     try {
-      PageStore.fileReadObserver?.call(path);
-      text = await File(path).readAsString();
-      page = readPage(text);
+      // Not downloaded: nothing is read; the usual checks list it as still
+      // downloading, and it is asked for.
+      if (await _read(path) case StoredBytes(text: final t)) {
+        text = t;
+        page = readPage(text);
+      } else {
+        return;
+      }
     } on Object {
       return; // the usual checks report it
     }
@@ -3015,7 +3048,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     try {
       unchanged = _locationOf(path) == loc &&
           identical(_storeOf(loc), st) &&
-          File(_obs(path)).readAsStringSync() == text;
+          _bytesText(_readSync(path)) == text;
     } on Object {
       unchanged = false;
     }
@@ -3037,7 +3070,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     if (oldLoc != null && oldKey != null) {
       final oldPath = _storeOf(oldLoc).pathFor(id);
-      if (File(oldPath).existsSync()) {
+      if (notDownloaded(oldPath) || FileSystemEntity.typeSync(oldPath, followLinks: false) != FileSystemEntityType.notFound) {
         _known.remove(oldKey);
         _knownUnreadable(oldLoc, oldKey, oldPath, blockedWhy ?? 'duplicate page id $id');
       } else {
@@ -6733,9 +6766,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
     if (!pg.pageGone) {
       final src = pg.sourcePath;
-      if (FileSystemEntity.typeSync(src, followLinks: false) == FileSystemEntityType.notFound) {
-        pg.pageGone = true;
-      } else {
+      // No pre-check for a missing file: a stub-only original is not gone, and
+      // the checked delete answers absent for one that is (0190).
+      {
         await syncHook?.call('originals-before-delete', src);
         final want = utf8.encode(pg.copyText);
         copyProblem = '';
@@ -6744,7 +6777,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           r = await deleteFileIfMatches(
             src,
             bytes: utf8.encode(pg.sourceText),
-            stillRedundant: () => copyHolds(dStore.pathFor(pg.id), (d) => listEquals(File(_obs(d)).readAsBytesSync(), want)),
+            stillRedundant: () => copyHolds(dStore.pathFor(pg.id), (d) => _readHolds(d, want)),
             beforeFinalCheck: (path) async => syncHook?.call('originals-before-final-check', path),
           );
         } on Object catch (e) {
@@ -8659,13 +8692,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   Future<({String? text, bool missing, String? damaged, String? failure})> _readBinderTextInner(File f) async {
     final List<int> bytes;
-    try {
-      bytes = await f.readAsBytes();
-    } on FileSystemException catch (e) {
-      if (await FileSystemEntity.type(f.path) == FileSystemEntityType.notFound) {
+    switch (await _read(f.path)) {
+      case StoredBytes(bytes: final b):
+        bytes = b;
+      case StoredMissing():
         return (text: null, missing: true, damaged: null, failure: null);
-      }
-      return (text: null, missing: false, damaged: null, failure: e.message);
+      // Not downloaded: asked for, listed as still downloading, never cached.
+      case StoredNotDownloaded():
+        return (text: null, missing: false, damaged: null, failure: stillDownloading);
+      case StoredFailed(:final error):
+        return (text: null, missing: false, damaged: null, failure: error.message);
     }
     try {
       return (text: utf8.decode(bytes), missing: false, damaged: null, failure: null);
@@ -8969,12 +9005,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       throw const NotebookException('That copy belongs to a binder listed from another folder.');
     }
     await _lockRunUngated(Directory(path), () async {
-      if (await store.file.exists()) {
+      // Only a read that finds no file and no stub lets the put back go on.
+      if (await _read(store.file.path) is! StoredMissing) {
         throw const NotebookException('The binder file is there now, so nothing was put back.');
       }
-      final f = File(copyPath);
-      if (!await f.exists() || !_sameBytes(await f.readAsBytes(), bytes)) {
-        throw const NotebookException('That copy changed, so it was left as it is.');
+      switch (await _read(copyPath)) {
+        case StoredBytes(bytes: final b) when _sameBytes(b, bytes):
+          break;
+        case StoredNotDownloaded():
+          throw const NotebookException('That copy is still downloading, so nothing was put back. Try again in a moment.');
+        default:
+          throw const NotebookException('That copy changed, so it was left as it is.');
       }
       // The verified bytes go to a private temp that is published; the copy
       // itself is never moved, and is removed only if it still holds them.
@@ -9017,13 +9058,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           copyPath,
           bytes: bytes,
           beforeFinalCheck: putBackBeforeFinalCheckHook,
-          stillRedundant: () {
-            try {
-              return listEquals(store.file.readAsBytesSync(), bytes);
-            } on FileSystemException {
-              return false;
-            }
-          },
+          stillRedundant: () => _readHolds(store.file.path, bytes),
         );
         removed = r.deleted || r.outcome == DeleteOutcome.absent;
       } on StorageBusy {
@@ -9083,8 +9118,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // Whether the binder file is there and reads as a binder.
   bool _binderFileReadable(BinderStore store) {
     try {
-      Binder.parse(utf8.decode(store.file.readAsBytesSync()));
-      return true;
+      // Not downloaded counts as not readable: the stronger "only copy" question.
+      if (_readSync(store.file.path) case StoredBytes(:final bytes)) {
+        Binder.parse(utf8.decode(bytes));
+        return true;
+      }
+      return false;
     } on Object {
       return false;
     }
@@ -9722,13 +9761,24 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final String text;
     final int time;
     try {
-      PageStore.fileReadObserver?.call(path);
-      text = await File(path).readAsString();
+      switch (await _read(path)) {
+        case final StoredBytes b:
+          text = b.text;
+        case StoredMissing():
+          return (text: null, page: null, time: 0);
+        // Not downloaded: asked for; nothing is written or kept.
+        case StoredNotDownloaded():
+          throw _SaveRefused(
+            AiLinkResponse.error(
+              AiLinkCode.busy,
+              'This page is still downloading, so nothing was written. Try again in a moment.',
+            ),
+          );
+        case StoredFailed(:final error):
+          throw _SaveRefused(unreadable(error.message));
+      }
       time = (await File(path).lastModified()).millisecondsSinceEpoch;
     } on FileSystemException catch (e) {
-      if (await FileSystemEntity.type(path) == FileSystemEntityType.notFound) {
-        return (text: null, page: null, time: 0);
-      }
       throw _SaveRefused(unreadable(e.message));
     } on FormatException {
       throw _SaveRefused(unreadable('not valid UTF-8 text'));
@@ -10015,7 +10065,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             // edit in recovery (the bar says why). The backoff and the file's
             // change event try the save again.
             for (final p in e.paths) {
-              requestDownload?.call(p);
+              askSafely(p, askDownload);
             }
             return await _saveFailed(loc, st, toSave, savedSeq, session, error: e, reason: 'the page file is still downloading');
           }
@@ -10897,13 +10947,23 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final path = st.pathFor(id);
     await syncHook?.call('copy-recheck', path); // a test seam: sync puts a file back here
     final String? text;
+    // The entry stays, [m.failed] as it is: the page is not downloaded (it is
+    // asked for; its change event, and the mark's timer, run this again), or its
+    // folder is not there to say the file is gone (0064).
+    var waits = false;
     try {
       text = await _underFolderLock(st, () async {
-        try {
-          PageStore.fileReadObserver?.call(path);
-          return await File(path).readAsString();
-        } on PathNotFoundException {
-          return null;
+        switch (await _read(path)) {
+          case final StoredBytes b:
+            return b.text;
+          case StoredNotDownloaded():
+            waits = true;
+            return null;
+          case StoredMissing():
+            if (!await st.directory.exists()) waits = true;
+            return null;
+          case StoredFailed(:final error):
+            throw error;
         }
       });
     } on Object catch (ex) {
@@ -10912,6 +10972,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       m.failed = true;
       return false;
     }
+    if (waits) return false;
     if (text == null) {
       // A page still listed may be a sync client's replace in flight. Listed
       // nowhere: the deleting writer's decision stands.
@@ -10969,7 +11030,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           }
         }
       }
-    } on Object {
+    } on _NotDownloaded {
+      return false; // asked for; the entry stays and is looked at again
+    } on Object catch (e) {
+      // The page is not downloaded: the entry stays, [m.failed] as it is.
+      if (e is StorageBusy && e.reason == StorageBusyReason.dataless) return false;
       m.failed = true;
       rethrow;
     }
@@ -11174,7 +11239,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         if (_heldAt(at)) continue;
         final st = _storeOf(at);
         final path = st.pathFor(m.pageId);
-        final gone = await _underFolderLock(st, () async => !await File(path).exists()).timeout(leaveSaveLimit);
+        // Gone only when the read finds no file and no stub, with the folder there.
+        final gone = await _underFolderLock(
+          st,
+          () async => await _read(path) is StoredMissing && await st.directory.exists(),
+        ).timeout(leaveSaveLimit);
         if (gone && _loc[m.pageId] == null) await _deleteEntry(rec, e);
       } on Object catch (ex) {
         debugPrint('Retiring the merged copy of deleted page ${m.pageId} failed: $ex');
@@ -11289,13 +11358,6 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (moved != null) return moved;
     final path = st.pathFor(id);
     final file = File(path);
-    // A page that is not downloaded (a stub is the file, R5.5) is neither
-    // changed nor gone: the replay waits for its change event, the entry stays,
-    // and the download is asked for.
-    if (isDataless(path)) {
-      requestDownload?.call(path);
-      return false;
-    }
     // Landed before and not settled yet (a read that kept failing, a write that
     // threw): not merged again, only settled.
     final landed = _landedText[e.gen];
@@ -11312,9 +11374,21 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       NotedPage? theirs;
       String? theirsText;
       var time = DateTime.now().millisecondsSinceEpoch;
-      if (await file.exists()) {
+      // A page that is not downloaded (a stub is the file, R5.5) is neither
+      // changed nor gone: the replay waits for its change event, the entry
+      // stays, and the download is asked for (by the read). Only "no file and no
+      // stub", with the folder there, is a page that is not there.
+      // The read and the folder check are one job under the folder lock.
+      final (read, folderThere) = await _underFolderLock(st, () async {
+        final r = await _read(path);
+        return (r, r is! StoredMissing || await st.directory.exists());
+      });
+      if (read is StoredNotDownloaded) return false;
+      if (read is StoredMissing && !folderThere) return false;
+      if (read is! StoredMissing) {
         try {
-          theirsText = utf8.decode(await File(_obs(file.path)).readAsBytes());
+          if (read is StoredFailed) throw read.error;
+          theirsText = utf8.decode((read as StoredBytes).bytes);
           time = (await file.lastModified()).millisecondsSinceEpoch;
         } on FormatException catch (ex) {
           throw _ReplayFailure("the saved file of $label isn't a valid page file", detail: '$ex');
@@ -11454,22 +11528,30 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           back = await st.readText(id);
         } on FormatException {
           invalid = 'not valid UTF-8 text';
+        } on StorageBusy catch (ex) {
+          // Not downloaded: asked for; the entry stays and the change event runs
+          // this again. Never taken for gone, never written back over.
+          for (final p in ex.paths) {
+            askSafely(p, askDownload);
+          }
+          return false;
         } on FileSystemException catch (ex) {
           if (read < 2) {
             await Future<void>.delayed(const Duration(milliseconds: 50));
             continue; // a lock may pass; a few tries
           }
-          absent = !await File(path).exists();
+          // Gone only on "no file and no stub", with the folder there.
+          final seen = await _read(path);
+          if (seen is StoredNotDownloaded) return false;
+          absent = seen is StoredMissing && await st.directory.exists();
           readError = ex;
-          if (!absent) {
-            // The store reports text that isn't UTF-8 as a failed read too.
+          // The store reports text that isn't UTF-8 as a failed read too.
+          if (seen is StoredBytes) {
             try {
-              utf8.decode(await File(_obs(path)).readAsBytes());
+              utf8.decode(seen.bytes);
             } on FormatException {
               invalid = 'not valid UTF-8 text';
               readError = null;
-            } on FileSystemException {
-              // Locked: not settled yet.
             }
           }
           break;
@@ -12713,9 +12795,16 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     await checkFile(path);
     // The file is there: the copies that waited for it as their original are
     // looked at again.
-    if (!_disposed && !isDataless(path)) await _recheckCopiesWaitingFor(path);
+    if (!_disposed && !isDataless(path)) {
+      // The open page's save that this file held lands first, so a copy's retry
+      // below merges into a file that holds the page.
+      if (id != null && id == _current?.page.id && _preview == null && _trouble.isTrouble && _trouble.pageId == id) {
+        await retrySave();
+      }
+      await _recheckCopiesWaitingFor(path);
+    }
     if (_disposed || id == null) return;
-    if (await FileSystemEntity.type(path) != FileSystemEntityType.notFound) return;
+    if (notDownloaded(path) || await _read(path) is! StoredMissing) return;
     // The file is gone: the files listed as duplicates of its page are looked
     // at again (their last known text is forgotten, so each is read afresh).
     final dupes = [
@@ -13269,8 +13358,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // would download it, and is not gone: nothing is learned from it now. The
     // download is asked for, and the file is looked at again on its change
     // event. An open page's save meets the same file and keeps its edit (R5.5).
-    if (isDataless(path)) {
-      requestDownload?.call(path);
+    if (notDownloaded(path)) {
+      askSafely(path, askDownload);
       return false;
     }
     final file = File(path);
@@ -13293,35 +13382,47 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       //
       // A file whose stamp is the one last classified is not read (rule P, S): the
       // open page's file and a blocked page are always read.
-      Future<({String text, int time, FileStamp? stamp, bool skip})> read() => _readUnderFolderLock(file.parent, () async {
+      Future<({String? text, int time, FileStamp? stamp, bool skip, bool downloading})> read() => _readUnderFolderLock(file.parent, () async {
         final before = fileStamp(path);
         if (!isOpen && _diskBlockId == null && before != null && _fileStamps[key] == before) {
-          return (text: '', time: 0, stamp: before, skip: true);
+          return (text: '', time: 0, stamp: before, skip: true, downloading: false);
         }
         if (before != null) await syncHook?.call('check-read', path);
-        if (before != null || file.existsSync()) PageStore.fileReadObserver?.call(path);
-        final s = await file.readAsString();
-        final t = (await file.lastModified()).millisecondsSinceEpoch;
+        // The routed read answers "gone" (no file and no stub) and "not
+        // downloaded" (asked for; nothing is read, learned or cached).
+        final String s;
+        switch (await _read(path)) {
+          case final StoredBytes b:
+            s = b.text;
+          case StoredMissing():
+            return (text: null, time: 0, stamp: null, skip: false, downloading: false);
+          case StoredNotDownloaded():
+            return (text: null, time: 0, stamp: null, skip: false, downloading: true);
+          case StoredFailed(:final error):
+            throw error;
+        }
+        var t = DateTime.now().millisecondsSinceEpoch;
+        try {
+          t = (await file.lastModified()).millisecondsSinceEpoch;
+        } on FileSystemException {
+          // Gone since the read: the time of now.
+        }
         // Unchanged across the read, and not a link (a link is read through).
         final stable = before != null && before == fileStamp(path) && !FileSystemEntity.isLinkSync(path);
-        return (text: s, time: t, stamp: stable ? before : null, skip: false);
+        return (text: s, time: t, stamp: stable ? before : null, skip: false, downloading: false);
       });
 
       final got = isOpen ? await _whileBusy(read) : await read();
-      if (got.skip) return false;
+      if (got.skip || got.downloading) return false;
       if (_pathId[key] case final moving? when _busy[moving] == _busyMoving) return false;
       text = got.text;
       time = got.time;
       readStamp = got.stamp;
     } on FileSystemException catch (e) {
-      if (await FileSystemEntity.type(path) == FileSystemEntityType.notFound) {
-        text = null;
-      } else {
-        // It is there but can't be read now: not the same as missing.
-        if (_disposed) return false;
-        debugPrint('Reading $path failed: $e');
-        return isOpen && await _blockOpen(loc, key, "it couldn't be read", openId);
-      }
+      // It is there but can't be read now: not the same as missing.
+      if (_disposed) return false;
+      debugPrint('Reading $path failed: $e');
+      return isOpen && await _blockOpen(loc, key, "it couldn't be read", openId);
     } on FormatException {
       if (_disposed) return false;
       if (isOpen) return _blockOpen(loc, key, "it isn't a valid page file", openId);
@@ -13520,6 +13621,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // [openId] is the page the file belongs to; the page on screen may have
   // changed while this waited, and then nothing is blocked (the file is left
   // alone either way, so this still returns true).
+  // The reason [_blockOpen] is given for a page whose file is not downloaded.
+  static const String _downloadingWhy = 'it is still downloading';
+
   Future<bool> _blockOpen(String loc, String key, String why, String openId) async {
     if (_disposed) return false;
     final c = _current;
@@ -13533,7 +13637,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final keep = _blockKeep = await _keepForRecovery(loc, st, c.page, session: s, seq: s?.seq ?? 0);
       // A recovery write that failed is the loud state, so leaving asks.
       if (s != null && identical(s, _session) && !keep.safe) {
-        _troubleFrom(s, c.page, keep, reason: "its file couldn't be read", folderGone: false);
+        _troubleFrom(s, c.page, keep, reason: why == _downloadingWhy ? 'the page file is still downloading' : "its file couldn't be read", folderGone: false);
       }
     }
     if (_disposed) return true;
@@ -13541,7 +13645,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _diskBlockId = openId;
     _diskBlockWhy = why;
     final kept = _blockKeep?.safe ?? true;
-    _diskBlockReason = kept
+    _diskBlockReason = why == _downloadingWhy
+        ? (kept
+              ? 'This page is read-only while its file downloads. Your edits are kept in recovery.'
+              : 'This page is read-only while its file downloads. Your edits could not be kept in recovery, so they exist only on screen. Use Save a copy elsewhere or Copy page text.')
+        : kept
         ? 'This page is read-only: its file was replaced and $why. '
               'Your edits are kept in recovery. Put back a readable version, or open another page.'
         : 'This page is read-only: its file was replaced and $why. '
@@ -13671,12 +13779,26 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // This copy is the file listed for the page (it was alone, or reported
       // before its original): the page is handed to the original, not evicted.
       NotedPage? op;
+      var waiting = false;
       try {
-        op = readPage(await File(_obs(original)).readAsString());
+        switch (await _read(original)) {
+          case final StoredBytes b:
+            op = readPage(b.text);
+          case StoredNotDownloaded():
+            waiting = true;
+          default:
+            op = null;
+        }
       } on Object {
         op = null;
       }
       if (_disposed) return true;
+      if (waiting) {
+        // The original is not downloaded: this copy waits; nothing is promoted or dropped.
+        _known.remove(key);
+        _knownUnreadable(loc, key, path, stillDownloading);
+        return true;
+      }
       if (op != null && op.id == copy.id) {
         _pathId.remove(key);
         _known.remove(key);
@@ -13738,6 +13860,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       _knownUnreadable(loc, key, path, 'conflict copy of a duplicate file; not merged');
       return true;
     }
+    var waiting = false;
     try {
       // The sync client may change the copy or the original while this runs.
       // The copy is deleted only if it still holds what was merged, and the
@@ -13749,25 +13872,48 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           break;
         } on _SourceChanged {
           if (attempt >= 4) throw _PassingFailure('the page files keep changing');
+          final again = await _read(path);
+          if (again is StoredNotDownloaded) {
+            waiting = true; // asked for; the copy is kept and merged when it is back
+            break;
+          }
+          if (again is StoredMissing) break; // the copy is gone: nothing left to merge or delete
+          if (again is StoredFailed) throw again.error;
+          text = (again as StoredBytes).text;
           try {
-            PageStore.fileReadObserver?.call(path);
-            text = await File(path).readAsString();
             time = (await File(path).lastModified()).millisecondsSinceEpoch;
           } on FileSystemException {
-            if (await FileSystemEntity.type(path) != FileSystemEntityType.notFound) rethrow;
-            break; // the copy is gone: nothing left to merge or delete
+            // The time stays.
           }
           copy = readPage(text);
           originalPath = await PageStore.findConflictOriginal(path, copy, preferred: _adoptedFiles[copy.id]);
           if (originalPath == null) throw const FormatException('its page file is gone');
         }
       }
+      if (waiting) {
+        _known.remove(key);
+        _knownUnreadable(loc, key, path, stillDownloading);
+        return true;
+      }
       _known.remove(key);
       _passingCopies.remove(key);
       _dropUnreadable(loc, path);
+    } on _NotDownloaded {
+      _known.remove(key);
+      _knownUnreadable(loc, key, path, stillDownloading);
     } on Object catch (e) {
       debugPrint('Merging conflict copy $path failed, keeping it: $e');
       _known.remove(key);
+      // The page it is a copy of is not downloaded: listed as waiting for it, and
+      // merged when it is there (on its event, or at the folder check).
+      if (e is StorageBusy &&
+          e.reason == StorageBusyReason.dataless &&
+          originalPath != null &&
+          e.paths.any((p) => _key(p) == _key(originalPath!))) {
+        _passingCopies.remove(key);
+        _knownUnreadable(loc, key, path, PageStore.copyOfDatalessReason);
+        return true;
+      }
       // Retried when the original is seen and at the folder check only if the
       // failure is one that passes, by its type (not by its words).
       if (_passingFailure(e)) {
@@ -13834,8 +13980,19 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // turned out to be open after all (checked first, inside the job).
     Future<({bool open, String? failure})> closedBranch() async {
       if (openHere()) return (open: true, failure: null);
-      PageStore.fileReadObserver?.call(originalPath);
-      final text = await File(originalPath).readAsString();
+      final String text;
+      switch (await _read(originalPath)) {
+        case final StoredBytes b:
+          text = b.text;
+        // Not downloaded: asked for. A passing failure (the copy is kept and
+        // merged when the original is looked at again).
+        case StoredNotDownloaded():
+          throw StorageBusy(StorageBusyReason.dataless, [originalPath]);
+        case StoredMissing():
+          throw PathNotFoundException(originalPath, const OSError('No such file or directory', 2));
+        case StoredFailed(:final error):
+          throw error;
+      }
       _noteDiskText(originalPath, text);
       final original = readPage(text);
       final top = _topOfChain(loc, original);
@@ -13911,10 +14068,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     await syncHook?.call('copy-merged', copyPath);
     final String current;
     try {
-      current = await File(_obs(copyPath)).readAsString();
-    } on FileSystemException {
-      if (await FileSystemEntity.type(copyPath) == FileSystemEntityType.notFound) return;
-      rethrow;
+      switch (await _read(copyPath)) {
+        case final StoredBytes b:
+          current = b.text;
+        // The copy is not deleted on a read that did not happen.
+        case StoredNotDownloaded():
+          throw const _NotDownloaded();
+        case StoredMissing():
+          return;
+        case StoredFailed(:final error):
+          throw error;
+      }
     } on FormatException {
       throw const _SourceChanged();
     }
@@ -14004,15 +14168,23 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // refuses reads or holds unreadable text may be back, held by sync.
       var present = false;
       try {
-        back = readPage(await File(_obs(path)).readAsString());
-        if (back.id != id) back = null;
-      } on PathNotFoundException {
-        back = null;
+        switch (await _read(path)) {
+          case final StoredBytes b:
+            back = readPage(b.text);
+            if (back.id != id) back = null;
+          case StoredMissing():
+            back = null;
+          // Not downloaded: it is there, asked for, and never "gone".
+          case StoredNotDownloaded():
+            present = true;
+          case StoredFailed():
+            present = true;
+        }
       } on Object {
-        // Refuses reads, holds invalid text or half-synced JSON: while the file
-        // exists it may still be the chosen page, so the choice stays.
+        // Holds invalid text or half-synced JSON: while the file exists it may
+        // still be the chosen page, so the choice stays.
         back = null;
-        present = File(path).existsSync();
+        present = true;
       }
       await syncHook?.call('confirm-gone-read', path);
       // The page may have been opened or made busy while the file was read.
@@ -14073,11 +14245,20 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         // page file like any other.
         if (conflictCopyOriginalNames(name).isNotEmpty) {
           NotedPage? page;
+          var waits = false;
           try {
-            page = readPage(await File(_obs(u.path)).readAsString());
+            switch (await _read(u.path)) {
+              case final StoredBytes b:
+                page = readPage(b.text);
+              case StoredNotDownloaded():
+                waits = true;
+              default:
+                page = null;
+            }
           } on Object {
             page = null;
           }
+          if (waits) continue; // not downloaded: it waits, nothing is promoted or dropped
           if (page != null && page.id == id && await PageStore.findConflictOriginal(u.path, page) != null) continue;
         }
         candidates.add((loc, u));
@@ -14092,7 +14273,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       {
         final NotedPage page;
         try {
-          page = readPage(await File(_obs(u.path)).readAsString());
+          if (await _read(u.path) case StoredBytes(:final text)) {
+            page = readPage(text);
+          } else {
+            continue; // not downloaded, gone or failed: not promoted now
+          }
         } on Object {
           continue;
         }
@@ -14699,24 +14884,31 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final cached = _candidateReads[path];
       if (cached != null && cached.size == size && cached.time == time) return cached.read;
       await _binderSeam('candidate-read', path);
-      final bytes = await File(_obs(path)).readAsBytes();
-      _Candidate result;
-      try {
-        final binder = Binder.parse(utf8.decode(bytes));
-        result = RegExp(r'^[0-9a-f]{16}$').hasMatch(binder.id)
-            ? _Candidate.found(binder.id, binder.title)
-            : const _Candidate.notOne();
-      } on BinderFormatException {
-        result = const _Candidate.notOne();
-      } on FormatException {
-        result = const _Candidate.notOne();
+      // Not downloaded: asked for, reported as a failed read, never cached.
+      if (await _read(path) case StoredBytes(:final bytes)) {
+        return _candidateOf(path, size, time, bytes);
       }
-      _candidateReads[path] = (size: size, time: time, read: result);
-      return result;
+      return const _Candidate.failed();
     } on FileSystemException catch (e) {
       debugPrint('Reading $path failed: $e');
       return const _Candidate.failed();
     }
+  }
+
+  _Candidate _candidateOf(String path, int size, int time, List<int> bytes) {
+    _Candidate result;
+    try {
+      final binder = Binder.parse(utf8.decode(bytes));
+      result = RegExp(r'^[0-9a-f]{16}$').hasMatch(binder.id)
+          ? _Candidate.found(binder.id, binder.title)
+          : const _Candidate.notOne();
+    } on BinderFormatException {
+      result = const _Candidate.notOne();
+    } on FormatException {
+      result = const _Candidate.notOne();
+    }
+    _candidateReads[path] = (size: size, time: time, read: result);
+    return result;
   }
 
   // The job that lists a found binder, after rechecking at the moment it runs.
@@ -14928,7 +15120,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // Asks for the download of every page, binder file and attachment listed as
   // "Still downloading" (at open, and on each change event).
   void _requestListedDownloads() {
-    final ask = requestDownload;
+    final ask = askDownload;
     if (ask == null) return;
     final lists = [
       _unreadable,
@@ -14937,11 +15129,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     ];
     for (final list in lists) {
       for (final u in list) {
-        if (u.reason == stillDownloading) ask(u.path);
+        if (u.reason == stillDownloading) askSafely(u.path, ask);
       }
     }
     for (final b in _binders.values) {
-      if ((b.reason ?? '').contains('still downloading')) ask('${b.path}${Platform.pathSeparator}$binderFileName');
+      if ((b.reason ?? '').contains('still downloading')) askSafely('${b.path}${Platform.pathSeparator}$binderFileName', ask);
     }
   }
 
@@ -15300,7 +15492,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // like _checkFile does.
   Future<String> _whyUnreadable(String path, String id) async {
     try {
-      final page = readPage(utf8.decode(await File(_obs(path)).readAsBytes()));
+      final r = await _read(path);
+      if (r is StoredNotDownloaded) return _downloadingWhy;
+      if (r is StoredFailed) throw r.error;
+      final page = readPage(utf8.decode((r as StoredBytes).bytes));
       return page.id != id ? 'it holds a different page' : "it isn't a page this version of Noted can read";
     } on UnsupportedPageFormatException {
       return 'it is from a newer version of Noted';
@@ -15330,13 +15525,22 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (_orphanLoc == loc && _loc[id] == null) {
         try {
           final path = _storeOf(loc).pathFor(id);
-          if (await FileSystemEntity.type(path) != FileSystemEntityType.notFound) {
-            debugPrint('Open page $id: its file is there but cannot be read as a page.');
+          // Only "no file and no stub" is a file that is gone; one that is not
+          // downloaded is asked for and the page stays read-only (the change
+          // event merges it when it is there).
+          final seen = await _read(path);
+          if (seen is! StoredMissing) {
+            final downloading = seen is StoredNotDownloaded;
+            debugPrint(
+              downloading
+                  ? 'Open page $id: its file is not downloaded yet.'
+                  : 'Open page $id: its file is there but cannot be read as a page.',
+            );
             _loc[id] = loc;
             _metas[id] = c.page.meta;
             _orphanLoc = null;
             _rebuildTree();
-            await _blockOpen(loc, _key(path), await _whyUnreadable(path, id), id);
+            await _blockOpen(loc, _key(path), downloading ? _downloadingWhy : await _whyUnreadable(path, id), id);
             return (ran: false, theirs: null);
           } else {
             // Its file is gone (the page was saved before the folder went and
@@ -15362,11 +15566,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final path = _storeOf(loc).pathFor(id);
       final file = File(path);
       final String text;
-      try {
-        PageStore.fileReadObserver?.call(path);
-        text = await file.readAsString();
-      } on PathNotFoundException {
-        return (ran: true, theirs: null);
+      switch (await _read(path)) {
+        case final StoredBytes b:
+          text = b.text;
+        case StoredMissing():
+          return (ran: true, theirs: null);
+        // Not downloaded: asked for; read-only until it is there, then merged.
+        case StoredNotDownloaded():
+          if (_current == c) await _blockOpen(loc, _key(path), _downloadingWhy, id);
+          return (ran: false, theirs: null);
+        case StoredFailed(:final error):
+          throw error;
       }
       final time = (await file.lastModified()).millisecondsSinceEpoch;
       final page = readPage(text);
