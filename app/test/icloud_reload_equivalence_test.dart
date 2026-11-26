@@ -887,7 +887,9 @@ class _Sim {
     ),
     data: const RawJson.trusted('{"k":1}'),
     snapshotText: marker,
-    rev: 'r$_counter',
+    // One revision for each marker: two different boxes with the same revision are one
+    // version to the app (a copy box is found on disk by revision when its id changed).
+    rev: 'r${int.parse(marker.split('-').last)}',
   );
 
   String _stubOf(String path) {
@@ -2186,10 +2188,49 @@ class _Sim {
     await nb.discoveryIdle;
     // Judged last, after every look the settle makes: an excuse is kept only while the
     // app still had its reason.
+    await settleConsumedCopies();
     _recordDeclinedStrays();
   }
 
+  // Where each marker was when the settle ended, before the reload (for a message).
+  Map<String, List<String>> heldAtSettle = {};
+
+  /// A conflict copy the app merged and deleted waits in recovery for `copyRetireAfter`
+  /// (30 s by the notebook's clock) before a read of the page decides whether the page
+  /// still holds it or a sync client put an older file back (then the merge is done
+  /// again, 0183). The settle does not wait 30 s: it moves the notebook's clock past it,
+  /// for the check only, and asks for the check, so the live page is compared with the
+  /// reload after the app's own re-check, never before it.
+  Future<void> settleConsumedCopies() async {
+    final waiting = (await nb.recoveryStoreForTest!.list()).entries;
+    if (waiting.isEmpty) return;
+    phase = 'settle: consumed copies';
+    final pagesWithEntries = {for (final e in waiting) e.pageId};
+    // A page that is open is checked when it is closed: leave it for one without entries.
+    final other = pageIds.where((id) => !pagesWithEntries.contains(id) && pageLoc(id) != null).toList()..sort();
+    if (other.isNotEmpty) {
+      try {
+        await nb.open(other.first);
+      } on Object {
+        // not downloaded: the check below says so
+      }
+    }
+    final real = DateTime.now;
+    final start = real();
+    nb.now = () => real().add(Duration(seconds: 31)).add(real().difference(start));
+    try {
+      for (var i = 0; i < 2; i++) {
+        await nb.recoverNowForTest();
+        await nb.flush();
+        await nb.discoveryIdle;
+      }
+    } finally {
+      nb.now = real;
+    }
+  }
+
   void _recordDeclinedStrays() {
+    heldAtSettle = {for (final m in durable.keys) m: where(m)};
     // What the app declined to move (0150: a file it could not read, such as a leftover
     // of a replace, in the folder counts as the page), judged now: the reload that the
     // verify makes puts the leftovers back and so removes the reason.
@@ -2360,7 +2401,7 @@ class _Sim {
           final texts = {for (final n in nb.current!.page.nodes) if (n is BoxRecord) '${n.id}@${n.rev}': n.snapshotText};
           problems.add(
             'page $id: live ${a.length} boxes, reload ${b.length}; only in the reload: ${[for (final k in b.difference(a)) '$k ${texts[k]}']}; '
-            'only live: ${[for (final k in a.difference(b)) k]}; recovery entries ${await _entriesOf(id)}; page is at ${pageLoc(id) == drivePath ? 'drive' : 'Sub'}; moved: ${log.where((l) => l == 'appMove').length}',
+            'only in the reload, where it is kept: ${[for (final k in b.difference(a)) '${texts[k]} -> ${durable[texts[k]]}: now ${where(texts[k] ?? '')}, at the end of the settle ${heldAtSettle[texts[k]]}']}; only live: ${[for (final k in a.difference(b)) k]}; recovery entries ${await _entriesOf(id)}; page is at ${pageLoc(id) == drivePath ? 'drive' : 'Sub'}; moved: ${log.where((l) => l == 'appMove').length}',
           );
         }
       } on Object catch (e) {
