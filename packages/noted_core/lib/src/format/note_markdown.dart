@@ -18,8 +18,10 @@ import 'export_links.dart';
 /// `</ai-written>` after it.
 ///
 /// With [export], the markdown is for a file that leaves Noted: every text
-/// is escaped (`<` as `&lt;`; `\`, `[`, `]`, `(`, `)`, `!` and the backtick
-/// with a backslash), a link keeps its target only for `http`, `https` and
+/// is escaped (`<` as `&lt;`, a `&` that begins a character reference as
+/// `&amp;`, and a backslash before `\`, `[`, `]`, `(`, `)`, `!`, `*`, `_`, `~`
+/// and the backtick; a block marker at the start of a line is escaped too), a
+/// link keeps its target only for `http`, `https` and
 /// `mailto` (the target's `(`, `)`, `<`, `>`, `\`, spaces and control
 /// characters are percent-encoded), and code runs, equations and formula
 /// values are written as code, not escaped: adjacent ones are joined into one
@@ -100,7 +102,7 @@ final class _Writer {
   // With markAi, `<` in written text becomes `&lt;`, so no content line can
   // equal an <ai-written> marker line.
   String _esc(String s) {
-    if (export) return _escapeText(s);
+    if (export) return _escapeText(s, lineStart: false);
     return markAi ? s.replaceAll('<', '&lt;') : s;
   }
 
@@ -222,7 +224,7 @@ final class _Writer {
         _addPiece(pieces, _Piece.code(text, target));
         continue;
       }
-      var t = _escapeText(text);
+      var t = _escapeText(text, lineStart: pieces.isEmpty);
       if (attrs['bold'] == true) t = '**$t**';
       if (attrs['italic'] == true) t = '_${t}_';
       if (attrs['strikethrough'] == true) t = '~~$t~~';
@@ -312,11 +314,35 @@ final class _Piece {
   final String? link;
 }
 
-final RegExp _needsEscape = RegExp(r'[\\\[\]()!`]');
+final RegExp _needsEscape = RegExp(r'[\\\[\]()!`*_~]');
 
-/// [s] as markdown text that can't start a link, an image, code or HTML.
-String _escapeText(String s) =>
-    s.replaceAll('<', '&lt;').replaceAllMapped(_needsEscape, (m) => '\\${m[0]}');
+// `&` that would begin a character reference (`&copy;`, `&#169;`, `&#xA9;`).
+final RegExp _entity = RegExp(r'&(?=(#[0-9]+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]*);)');
+
+// What at the start of a line (after up to three spaces) begins a block: a
+// heading, a quote, a bullet, a setext underline, or `1.` / `1)`. Run after
+// the general escape, so a `)` is already `\)`.
+final RegExp _blockStart = RegExp(r'^( {0,3}\t?)(?:([#>+=-])|(\d{1,9})(\.))');
+
+/// [s] as markdown text that is only text: no emphasis (`*`, `_`, `~`), link,
+/// image, code, HTML or character reference, and, at the start of a line (the
+/// start of [s] when [lineStart], and after each line break in it), no block
+/// marker (`#`, `>`, `-`, `+`, `=`, `1.`, `1)`).
+String _escapeText(String s, {bool lineStart = true}) {
+  final escaped = s
+      .replaceAllMapped(_entity, (_) => '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAllMapped(_needsEscape, (m) => '\\${m[0]}');
+  final lines = escaped.split('\n');
+  for (var i = 0; i < lines.length; i++) {
+    if (i == 0 && !lineStart) continue;
+    lines[i] = lines[i].replaceFirstMapped(_blockStart, (m) {
+      final c = m[2];
+      return c != null ? '${m[1]}\\$c' : '${m[1]}${m[3]}\\${m[4]}';
+    });
+  }
+  return lines.join('\n');
+}
 
 int _longestRun(String s) {
   var longest = 0, run = 0;

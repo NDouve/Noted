@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import 'dart:convert' show utf8;
 import 'dart:io' show Platform;
 
 import 'package:file_selector/file_selector.dart';
@@ -261,6 +262,10 @@ Future<void> runExportCommand(
   // The page again, after the dialog.
   if (!context.mounted || !canvas.mounted || !target.holds) {
     say(exportPageChanged);
+    return;
+  }
+  if (utf8.encode(exportBaseName(path)).length > exportNameMaxBytes) {
+    say('Choose a shorter name.');
     return;
   }
   if (ExportTargetCheck(roots: roots, sandboxed: Platform.isMacOS).refuses(path)) {

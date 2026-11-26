@@ -472,6 +472,18 @@ void main() {
       await w.close(t);
     });
 
+    testWidgets('a chosen name over the byte cap is refused and nothing is written', (t) async {
+      final w = await open(t);
+      await insert(t, w, _note('a', 'text'));
+      pickOverride = (name, f) async => '${out.path}${Platform.pathSeparator}${'a' * 176}.txt';
+      expect(await export(t, w, 'a', 'text'), 'Choose a shorter name.');
+      expect(out.listSync(), isEmpty);
+      // One at the cap is fine.
+      pickOverride = (name, f) async => '${out.path}${Platform.pathSeparator}${'a' * 171}.txt';
+      expect(await export(t, w, 'a', 'text'), startsWith('Exported '));
+      await w.close(t);
+    });
+
     testWidgets('Noted\'s own folders are refused', (t) async {
       final w = await open(t);
       await insert(t, w, _note('a', 'text'));

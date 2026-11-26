@@ -9,10 +9,10 @@ import 'package:noted_core/noted_core.dart';
 import '../page_attachments.dart' show safeOpenFileName;
 
 /// The longest name Noted writes for an export, in UTF-8 bytes: 255 less the
-/// room of the longest name derived from it. The longest chain is the staging
-/// temp `.<name>.noted-export-<16 hex>.tmp` (35 bytes more) with the aside of
-/// the checked delete, `.<pid>-<8 hex>-<8 hex>.cas-verified` (up to 42 more):
-/// 77, rounded up to 80.
+/// room of the longest name derived from it. The worst case is the probe's link
+/// name `.<name>.noted-export-<16 hex>.link.tmp` (40 bytes more) with the aside
+/// of the checked delete, `.<pid>-<8 hex>-<8 hex>.cas-verified` (39 more): 79,
+/// rounded up to 80.
 const int exportNameMaxBytes = 255 - 80;
 
 final RegExp _device = RegExp(r'^(con|prn|aux|nul|com[1-9]|lpt[1-9])$', caseSensitive: false);

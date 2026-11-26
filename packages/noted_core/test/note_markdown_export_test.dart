@@ -46,6 +46,7 @@ Map<String, Object?> table(List<List<List<Object?>>> rows) => {
 };
 
 void main() {
+  _literalTests();
   group('links', () {
     String link(String href) => exportOps([
       op('x', {'href': href}),
@@ -326,6 +327,86 @@ void main() {
 
     test('plain text between code runs separates them', () {
       expect(exportOps([code('a'), op(' '), code('b')]), '`a` `b`');
+    });
+  });
+}
+
+void _literalTests() {
+  group('literal text is never Markdown', () {
+    String t(String s) => exportOps([op(s)]);
+
+    test('emphasis marks', () {
+      expect(t('*literal* and _x_ and ~~y~~'), r'\*literal\* and \_x\_ and \~\~y\~\~');
+      expect(t('snake_case_name'), r'snake\_case\_name');
+    });
+
+    test('a character reference is not one', () {
+      expect(t('&copy; &#169; &#xA9; &amp;'), '&amp;copy; &amp;#169; &amp;#xA9; &amp;amp;');
+      expect(t('fish & chips &'), 'fish & chips &');
+    });
+
+    test('a block marker at the start of a line', () {
+      expect(t('# heading'), r'\# heading');
+      expect(t('> quote'), r'\> quote');
+      expect(t('- item'), r'\- item');
+      expect(t('+ item'), r'\+ item');
+      expect(t('1. item'), r'1\. item');
+      expect(t('12) item'), r'12\) item');
+      expect(t('=== under'), r'\=== under');
+      expect(t('---'), r'\---');
+      expect(t('***'), r'\*\*\*');
+      expect(t('___'), r'\_\_\_');
+      expect(t('  # indented'), r'  \# indented');
+    });
+
+    test('and after a line break inside the text, but not in the middle of a line', () {
+      expect(t('a\n# b\n1. c'), 'a\n\\# b\n1\\. c');
+      expect(t('a # b - c > d 1. e'), 'a # b - c > d 1. e');
+    });
+
+    test('only the start of a run that begins the block counts', () {
+      expect(
+        exportOps([op('x'), op('# y')]),
+        'x# y',
+        reason: 'the second run is in the middle of a line',
+      );
+      expect(exportOps([op(''), op('# y')]), r'\# y', reason: 'an empty run writes nothing');
+    });
+
+    test('at each call site, and in a table cell the pipe too', () {
+      expect(export([para([op('# x')], type: 'quote')]), r'> \# x');
+      expect(export([para([op('- x')], type: 'bulleted_list')]), r'- \- x');
+      expect(export([para([op('*x*')], type: 'heading', data: {'level': 1})]), r'# \*x\*');
+      final cell = export([
+        table([
+          [
+            [op('a|*b*')],
+            [op('c')],
+          ],
+        ]),
+      ]);
+      expect(cell.split('\n').first, r'| a\|\*b\* | c |');
+    });
+
+    test('formatting from the attributes is still added', () {
+      expect(exportOps([op('*a*', {'bold': true})]), r'**\*a\***');
+    });
+
+    test('code is untouched', () {
+      expect(exportOps([op('*a* # &copy;', {'code': true})]), '`*a* # &copy;`');
+    });
+
+    test('what the importer reads back is the original text', () {
+      for (final s in ['*literal*', '_x_', '# heading', '- item', '1. item', '> q', '&copy;', 'a ~~b~~ c', '=== u']) {
+        final blocks = markdownToNoteBlocks(t(s));
+        final text = [
+          for (final b in blocks)
+            for (final d in ((b['data'] as Map)['delta'] as List? ?? const [])) (d as Map)['insert'],
+        ].join();
+        expect(blocks.length, 1, reason: s);
+        expect(blocks.single['type'], 'paragraph', reason: s);
+        expect(text, s, reason: s);
+      }
     });
   });
 }
