@@ -12,10 +12,12 @@ on:
         default: '1-40'
       repeat_seed:
         description: 'The seed to repeat'
-        default: '23'
+        type: number
+        default: 23
       repeat_count:
         description: 'How many times to repeat it (0: skip)'
-        default: '200'
+        type: number
+        default: 200
 
 permissions:
   contents: read
@@ -53,7 +55,7 @@ jobs:
         run: flutter test test/icloud_reload_equivalence_test.dart --name "seed [0-9]+$" --reporter expanded
 
       - name: One seed, repeated
-        if: ${{ !cancelled() && inputs.repeat_count != '0' && inputs.repeat_count != '' }}
+        if: ${{ !cancelled() && inputs.repeat_count != '0' }}
         shell: bash
         working-directory: app
         timeout-minutes: 75

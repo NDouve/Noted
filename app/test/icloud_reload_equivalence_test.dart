@@ -334,6 +334,7 @@ class _Sim {
   /// operation with an end (an FFI call, made at once).
   int note(String op, String path, String? to, {bool track = true, bool refused = false}) {
     final id = ++_noteId;
+    if (Zone.current[#untraced] == true) return id;
     if (_relOf(path) == null && !(to != null && _relOf(to) != null)) return id;
     final tag = Zone.current[#life];
     final by = Zone.current[#who];
@@ -358,10 +359,6 @@ class _Sim {
         if (key == null) continue;
         lastWrite[key] = line;
         if (stack != null) lastAppWrite[key] = '$line\n$stack';
-        // The write that put a new page file in place (not a temp or an aside).
-        if (_base(to ?? path) == '$key.canvas') {
-          lastPageWrite[key] = stack == null ? line : '$line\n$stack';
-        }
       }
     }
     return id;
@@ -373,16 +370,12 @@ class _Sim {
   final Map<String, String> lastWrite = {};
   final Map<String, String> lastAppWrite = {};
 
-  /// The last write that put a page file in place, whoever made it (with the
-  /// stack when it was the app).
-  final Map<String, String> lastPageWrite = {};
-
-  /// The page id a world path belongs to (its page file, and the temps and
-  /// leftovers beside it), else null.
+  /// The page id a world path is the page file of, else null (a temp, an aside
+  /// or a verified copy beside it is no page write).
   String? _pageKey(String p) {
     if (_relOf(p) == null) return null;
     final name = _base(p);
-    if (!name.contains('.canvas')) return null;
+    if (!name.endsWith('.canvas')) return null;
     final key = name.split('.').first;
     return key.length < 8 ? null : key;
   }
@@ -803,6 +796,7 @@ class _Sim {
 
   /// The planned kill came: drop the live notebook, put the copy back, launch.
   Future<void> crash() async {
+    _checkHarness();
     final s = snapshot!;
     snapshot = null;
     log.add('crash and relaunch');
@@ -923,7 +917,7 @@ class _Sim {
   // [withTemps]: a `.tmp` (the version temp landing keeps a version in between
   // a resolve and its re-publish) holds a marker too: the per-step check counts
   // it, the end check does not.
-  List<String> missing({bool withTemps = false}) {
+  List<String> missing({bool withTemps = false, Set<String> staleTemps = const {}}) {
     final texts = StringBuffer();
     for (final e in w.root.listSync(recursive: true, followLinks: false)) {
       if (e is! File) continue;
@@ -931,7 +925,7 @@ class _Sim {
       final name = _base(e.path);
       if (name.endsWith(asideSuffix) ||
           name.endsWith(verifiedSuffix) ||
-          (!withTemps && name.endsWith('.tmp'))) {
+          (name.endsWith('.tmp') && (!withTemps || staleTemps.contains(e.path)))) {
         continue;
       }
       try {
@@ -1024,6 +1018,13 @@ class _Sim {
   // once the process has been relaunched.
   Map<String, List<String>> _held = {};
 
+  Set<String> _prevTemps = {};
+
+  /// Runs [body] without noting its file operations in the trail (the
+  /// harness's own polling).
+  T untraced<T>(T Function() body) =>
+      runZoned(body, zoneValues: {#exempt: true, #untraced: true});
+
   Future<void> audit(String op) async {
     if (const bool.fromEnvironment('ICLOUD_TRACE')) {
       String short(String s) => s.replaceAllMapped(
@@ -1041,16 +1042,25 @@ class _Sim {
       log.add('=> files ${files.join(' ')} | rows ${rows.join(' ')}');
     }
     if (!quiet) return;
-    final now = {for (final m in durable.keys) m: where(m)};
+    final now = untraced(() => {for (final m in durable.keys) m: where(m)});
     // A marker can be between files for a moment: the app's save has moved the
     // page aside and not published yet. Only one that stays out of every file
     // while it is looked at again is lost.
     final clock = Stopwatch()..start();
-    var lost = missing(withTemps: true);
+    // A `.tmp` that was already there at the previous step is not a holder
+    // (one left by a killed life would hide a later loss).
+    List<String> look() => untraced(() => missing(withTemps: true, staleTemps: _prevTemps));
+    var lost = look();
     while (lost.isNotEmpty && clock.elapsed < const Duration(seconds: 5)) {
       await Future<void>.delayed(const Duration(milliseconds: 25));
-      lost = missing(withTemps: true);
+      lost = look();
     }
+    _prevTemps = untraced(
+      () => {
+        for (final e in w.root.listSync(recursive: true, followLinks: false))
+          if (e is File && e.path.endsWith('.tmp')) e.path,
+      },
+    );
     final gone = <String>[];
     for (final m in lost) {
       if (reportedMissing.add(m)) {
@@ -1376,6 +1386,7 @@ class _Sim {
 
   Future<void> verify() async {
     phase = 'verify';
+    _checkHarness();
     final problems = <String>[];
     // The live notebook, as a watcher event would leave it: its folder looked
     // at again, everything saved.
@@ -1510,12 +1521,15 @@ class _Sim {
       for (final f in files) {
         final key = f.split('.').first;
         out.write('\nlast write to $f: ${lastWrite[key] ?? 'none seen'}');
-        final app = lastAppWrite[key];
-        if (app != null && app != lastWrite[key]) out.write('\nlast app write to $f: $app');
-        if (app != null && app == lastWrite[key]) out.write(' (the app\'s)');
-        if (app != null) out.write('\n${app.split('\n').skip(1).join('\n')}');
-        final put = lastPageWrite[key];
-        if (put != null && put != app) out.write('\nlast write that put $f in place: $put');
+        final app = lastAppWrite[key]?.split('\n');
+        if (app != null) {
+          if (app.first == lastWrite[key]) {
+            out.write(' (the app\'s)');
+          } else {
+            out.write('\nlast app write to $f: ${app.first}');
+          }
+          out.write('\n${app.skip(1).join('\n')}');
+        }
       }
       out.write(
         '\nIO trail for $m (${durable[m]}), files $files (oldest retained #${trail.isEmpty ? '-' : trail.first.id}):',
@@ -1795,8 +1809,16 @@ Future<void> _runSeed(int seed, String what, {required bool stopAtFirst}) async 
 
 void main() {
   final envSeeds = _envSeeds();
-  final repeatSeed = int.tryParse(Platform.environment['NOTED_RELOAD_REPEAT_SEED'] ?? '');
-  final repeatCount = int.tryParse(Platform.environment['NOTED_RELOAD_REPEAT_COUNT'] ?? '') ?? 0;
+  final rawSeed = Platform.environment['NOTED_RELOAD_REPEAT_SEED']?.trim() ?? '';
+  final rawCount = Platform.environment['NOTED_RELOAD_REPEAT_COUNT']?.trim() ?? '';
+  final repeatSeed = int.tryParse(rawSeed);
+  final repeatCount = int.tryParse(rawCount) ?? 0;
+  if ((rawSeed.isNotEmpty && repeatSeed == null) ||
+      (rawCount.isNotEmpty && int.tryParse(rawCount) == null)) {
+    throw ArgumentError(
+      'NOTED_RELOAD_REPEAT_SEED "$rawSeed" and NOTED_RELOAD_REPEAT_COUNT "$rawCount" must be whole numbers',
+    );
+  }
   final repeating = repeatSeed != null && repeatCount > 0;
   final stopAtFirst = envSeeds != null || repeating;
   final seeds =
@@ -1940,7 +1962,7 @@ void main() {
               contains('disappeared after step'),
               contains('last write to'),
               contains('app(life'),
-              contains('_replaceIfUnchanged'), contains('in place'),
+              contains('_replaceIfUnchanged'),
             ),
           ),
         ),
@@ -1982,6 +2004,39 @@ void main() {
       );
       expect(tmp, isNotNull, reason: 'the hook held the marker in a temp');
       expect(tmp!.existsSync(), isFalse);
+    }, timeout: const Timeout(Duration(minutes: 4)));
+
+    // A `.tmp` that was already there at the previous step (one left by a
+    // killed life) does not hide a later loss.
+    test('a stale .tmp does not hold a marker at a later step', () async {
+      File? tmp;
+      await expectLater(
+        () => _sequence(
+          5,
+          setUp: (s) {
+            s.afterStep = (op) async {
+              final m = [
+                for (final e in s.durable.entries)
+                  if (e.value.startsWith('an app edit')) e.key,
+              ].firstOrNull;
+              if (m == null) return;
+              final page = s.pageFiles().firstWhere((f) => s.readText(f)!.contains(m));
+              final text = s.readText(page)!;
+              if (tmp == null) {
+                tmp = File('${page.path}.99999-1.tmp');
+                s.retrySync(() => tmp!.writeAsStringSync(text));
+              } else if (text.contains(m)) {
+                s.daemonWrite(page, writePage(readPage(text).removeNode(s.box(m).id)));
+              }
+            };
+          },
+          plan: const ['appEdit', 'appCheck', 'appCheck'],
+        ),
+        throwsA(
+          isA<TestFailure>().having((e) => e.message, 'message', contains('disappeared after step')),
+        ),
+      );
+      expect(tmp, isNotNull);
     }, timeout: const Timeout(Duration(minutes: 4)));
 
     // A copy that keeps failing while the file is there is a harness error, not
