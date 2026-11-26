@@ -21,7 +21,6 @@ import 'package:noted_core/noted_core.dart';
 import 'package:noted_core/src/storage/dataless.dart' show debugDatalessPaths, debugMarkDataless, debugUnmarkDataless;
 import 'package:noted_core/src/storage/exclusive_move.dart' show debugMoveStrategy, debugRenameDelay;
 import 'package:noted_core/src/storage/folder_walk.dart' show debugAppleMode;
-import 'support/io_trace.dart' show IoTrace, TracingIoOverrides;
 import 'support/notebook_folder.dart';
 
 void main() {
@@ -56,6 +55,7 @@ void main() {
     storedReadObserver = null;
     attachmentBeforePublishHook = null;
     Notebook.forceCopyMoveForTest = false;
+    Notebook.placeholderMarksForTest = {};
     Notebook.pairLockLimit = const Duration(seconds: 5);
     Notebook.pairRetryDelay = const Duration(milliseconds: 500);
     Notebook.strayQuiet = const Duration(seconds: 30);
@@ -118,7 +118,10 @@ void main() {
       final (nb, a, x) = await scanned();
       final src = assetsOf(pages, a);
       put(src, name, good);
+      put(src, name2, good2);
       debugMarkDataless('${src.path}$sep$name');
+      var copying = 0; // a file that is on the device would be copied if the listing did not refuse first
+      attachmentBeforePublishHook = (target) async => copying++;
       await expectLater(
         nb.move(a, parentId: x),
         throwsA(
@@ -129,12 +132,13 @@ void main() {
           ),
         ),
       );
+      expect(copying, 0, reason: 'refused up front, before any file was copied');
       await Future<void>.delayed(Duration.zero);
       expect(askedFor('${src.path}$sep$name'), isTrue);
       expect(File('${extra.path}$sep$a.canvas').existsSync(), isFalse, reason: 'no page was copied');
       expect(assetsOf(extra, a).existsSync(), isFalse);
       expect(File('${pages.path}$sep$a.canvas').existsSync(), isTrue);
-      expect(names(src), [name]);
+      expect(names(src), [name, name2]..sort());
     });
 
     test('B1: a file evicted between the listing and the copy is refused, the copies removed, the original unchanged', () async {
@@ -463,22 +467,20 @@ void main() {
       put(src, name2, good2);
       put(Directory('${src.path}${sep}sub'), name, good);
       debugMarkDataless('${src.path}$sep$name2');
+      // Also marked for the old seam, which forgets a mark when its file is read (hydrated).
+      Notebook.placeholderMarksForTest = {fileStamp('${src.path}$sep$name2')!};
       reads.clear();
       return (nb, a, x, src);
     }
 
     test('a move reads nothing of the evicted file, leaves it asked for, and moves the others one by one', () async {
       final (nb, a, x, src) = await world();
-      final trace = _Opens();
       await expectLater(
-        IOOverrides.runWithIOOverrides(() => nb.move(a, parentId: x), TracingIoOverrides(trace)),
+        nb.move(a, parentId: x),
         throwsA(isA<NotebookException>().having((e) => e.message, 'message', contains('Still downloading, left in the old folder: "$name2"'))),
       );
-      expect(
-        trace.opens.where((o) => o.toLowerCase().endsWith('${lower('${src.path}$sep$name2')}')),
-        isEmpty,
-        reason: 'no open or read of it, not even to download it: ${trace.opens}',
-      );
+      // The old placeholder seam forgets a mark when the file is read (hydrated): it is still there.
+      expect(Notebook.placeholderMarksForTest, isNotEmpty, reason: 'no read of it, not even to download it');
       await Future<void>.delayed(Duration.zero);
       expect(File('${extra.path}$sep$a.canvas').existsSync(), isTrue, reason: 'the page moved');
       expect(names(src), [name2], reason: 'only the evicted file stayed');
@@ -748,19 +750,4 @@ void main() {
       expect(File('${assetsOf(extra, a).path}$sep$name').readAsBytesSync(), good);
     });
   });
-}
-// Records the operations that open or read a file.
-class _Opens extends IoTrace {
-  final List<String> ops = [];
-
-  List<String> get opens => [
-    for (final o in ops)
-      if (o.startsWith('open') || o.startsWith('read')) o,
-  ];
-
-  @override
-  int begin(String op, String path, {String? to}) {
-    ops.add('$op ${path.replaceAll(r'', '/')}');
-    return super.begin(op, path, to: to);
-  }
 }

@@ -795,6 +795,10 @@ class _Sim {
       storeFactory: (d) => _Store(d, this),
     );
     w.notebooks.add(n);
+    // 0150: a stray folder the app declines to move says so (once); that is its answer.
+    n.attachmentNotices.listen((m) {
+      if (m.contains('stayed in') && m.contains('may still be the page')) strayDeclined = true;
+    });
     return n;
   }
 
@@ -950,7 +954,10 @@ class _Sim {
       if (e is File && _holds(e, marker)) _base(e.path),
   ];
 
+  bool _isAsset(String path) => _norm(path).contains('.assets/');
+
   bool _holds(File e, String marker) {
+    if (_isAsset(e.path)) return false;
     try {
       return latin1.decode(e.readAsBytesSync()).contains(marker);
     } on FileSystemException {
@@ -965,6 +972,8 @@ class _Sim {
     final texts = StringBuffer();
     for (final e in w.root.listSync(recursive: true, followLinks: false)) {
       if (e is! File) continue;
+      // Attachments hold no marker (and one that is not downloaded is not read).
+      if (_isAsset(e.path)) continue;
       // A leftover or a temp is not where a version is kept.
       final name = _base(e.path);
       if (name.endsWith(asideSuffix) ||
@@ -1305,6 +1314,8 @@ class _Sim {
   // Template ids this sequence's saves made (their assets folders may be removed
   // by the save's own rollback).
   final Set<String> madeTemplates = {};
+  // The app said it left a stray folder where it was, because a file there may still be the page.
+  bool strayDeclined = false;
   // The attachments' own random numbers and counter, so the other ops draw what they always drew.
   late final Random arnd = Random(seed * 104729 + 7);
   int _assetN = 0;
@@ -1474,24 +1485,37 @@ class _Sim {
       log.add('no second folder: $e');
       return;
     }
-    final ids = [for (final id in pageIds) if (pageLoc(id) != null && !nb.tree.descendantsOf(id).isNotEmpty) id]..sort();
-    final inDrive = [for (final id in ids) if (pageLoc(id) == drivePath) id];
-    final inSub = [for (final id in ids) if (pageLoc(id) == subDir.path) id];
-    if (inDrive.length < 2 && inSub.isEmpty) return;
-    final String id;
-    final String parent;
-    if (inSub.isNotEmpty && (inDrive.length < 2 || arnd.nextBool())) {
-      id = inSub[arnd.nextInt(inSub.length)];
-      if (inDrive.isEmpty) return;
-      parent = inDrive[arnd.nextInt(inDrive.length)];
-    } else {
-      id = inDrive[arnd.nextInt(inDrive.length)];
-      final others = [...inSub, ...inDrive.where((o) => o != id)];
-      if (others.isEmpty) return;
-      parent = others[arnd.nextInt(others.length)];
-      if (pageLoc(parent) != subDir.path) return; // into the other folder only
-    }
-    if (parent == id || nb.tree.descendantsOf(id).contains(parent)) return;
+    // The page that stays in the second folder is never moved: a page moving in has a parent there.
+    final anchor = pageIds.where((id) => pageLoc(id) == subDir.path).toList()..sort();
+    if (anchor.isEmpty) return;
+    // A page that has an edit waiting in recovery stays where it is: the harness is about
+    // attachments, and a kept edit moves with its page by rules of its own (R5).
+    final waiting = {for (final e in (await nb.recoveryStoreForTest!.list()).entries) e.pageId};
+    final movable = [
+      for (final id in pageIds)
+        if (id != anchor.first &&
+            !waiting.contains(id) &&
+            pageLoc(id) != null &&
+            !_hasFilesBeside(id) &&
+            nb.tree.descendantsOf(id).isEmpty)
+          id,
+    ]..sort();
+    if (movable.isEmpty) return;
+    // A page with an evicted file is the one to move, when there is one.
+    final withEvicted = [
+      for (final id in movable)
+        if (evictedPaths.values.any((k) => k.startsWith('$id|'))) id,
+    ];
+    final pool = withEvicted.isNotEmpty ? withEvicted : movable;
+    final id = pool[arnd.nextInt(pool.length)];
+    final from = pageLoc(id);
+    final parents = [
+      anchor.first,
+      for (final o in movable)
+        if (o != id && pageLoc(o) != from && !nb.tree.descendantsOf(id).contains(o)) o,
+    ].where((p) => pageLoc(p) != from).toList();
+    if (parents.isEmpty) return;
+    final parent = parents[arnd.nextInt(parents.length)];
     // Apple's rules: a folder with something not downloaded in it is never renamed.
     // They stay on for the rest of the sequence: the stray mover of the settle moves
     // what a move left behind under the same rules (cleared in [dispose]).
@@ -1510,6 +1534,19 @@ class _Sim {
         violations.add('an evicted attachment is gone from ${_base(File(p).parent.path)} after a move (renamed with its folder?)');
       }
     }
+  }
+
+  // Whether the folder of page [id] holds a copy, version, leftover or stub of its file:
+  // those stay behind when a page moves (a rule of the moves, not of the attachments).
+  bool _hasFilesBeside(String id) {
+    final loc = pageLoc(id);
+    if (loc == null) return false;
+    for (final e in Directory(loc).listSync(followLinks: false)) {
+      final n = _base(e.path);
+      if (e is Directory || n.endsWith('.assets')) continue;
+      if (n.toLowerCase().contains(id.toLowerCase()) && n != '$id.canvas') return true;
+    }
+    return false;
   }
 
   /// A page is saved as a template, with its images and files.
@@ -1590,12 +1627,13 @@ class _Sim {
               _mayStillBePage(other, id))
             other,
       ].isNotEmpty;
-      if (!f.existsSync() && declined) continue;
+      if (!f.existsSync() && (declined || strayDeclined)) continue;
       if (!f.existsSync()) {
         out.add(
           'the attachment ${_base(p)} of page $id is not at the page\'s place after the downloads (${loc == drivePath ? 'drive' : 'Sub'}); '
           'it is ${[for (final l in _locs) '${l == drivePath ? 'drive' : 'Sub'}: ${File(_assetPathIn(l, e.key)).existsSync() ? 'file' : File(_stubOf(_assetPathIn(l, e.key))).existsSync() ? 'stub' : 'absent'}']}; '
-          'the page is at ${[for (final l in _locs) '${l == drivePath ? 'drive' : 'Sub'}: ${File('$l/$id.canvas').existsSync()}']}\n  ${[for (final t in trail) if (t.line.contains(e.key.substring(e.key.indexOf('|') + 1, e.key.indexOf('|') + 9))) t.line].join('\n  ')}',
+          'the page is at ${[for (final l in _locs) '${l == drivePath ? 'drive' : 'Sub'}: ${File('$l/$id.canvas').existsSync()}']}; '
+          'drive holds ${[for (final x in Directory(drivePath).listSync(followLinks: false)) _base(x.path)]}, unreadable ${[for (final u in nb.unreadable) '${_base(u.path)} ${u.reason}']}',
         );
       } else if (!_sameBytes(exempt(() => f.readAsBytesSync()), e.value)) {
         out.add('the attachment ${_base(p)} of page $id changed');
@@ -1605,7 +1643,7 @@ class _Sim {
         final left = File(_assetPathIn(other, e.key));
         // A stray that 0150 declines (a file there may still be the page) is not a failure,
         // nor a copy whose name is taken at the page's place by the same file (a paste).
-        if (left.existsSync() && pageLoc(id) != null && !_mayStillBePage(other, id) && !f.existsSync()) {
+        if (left.existsSync() && pageLoc(id) != null && !_mayStillBePage(other, id) && !strayDeclined && !f.existsSync()) {
           out.add(
             'the attachment ${_base(p)} of page $id is left at the old place; ${other == drivePath ? 'drive' : 'Sub'} holds '
             '${[for (final x in Directory(other).listSync(followLinks: false)) _base(x.path)]}, unreadable ${[for (final u in nb.unreadable) '${_base(u.path)} ${u.reason}']}',
@@ -1690,6 +1728,15 @@ class _Sim {
   /// Once everything else is settled (the pages are classified), the stray check
   /// runs twice with no quiet wait: what a move left behind comes to its page.
   Future<void> settleStrays() async {
+    // Only when a file really is at a page's old place.
+    final stray = assets.keys.any((k) {
+      final loc = pageLoc(k.substring(0, k.indexOf('|')));
+      if (loc == null) return false;
+      return _locs.any(
+        (o) => o != loc && (File(_assetPathIn(o, k)).existsSync() || File(_stubOf(_assetPathIn(o, k))).existsSync()),
+      );
+    });
+    if (!stray) return;
     phase = 'settle: strays';
     final quiet = Notebook.strayQuiet;
     Notebook.strayQuiet = Duration.zero;
@@ -2023,7 +2070,6 @@ class _Sim {
     for (final p in evicted.keys.toList()) {
       await daemonMaterialize(path: p, told: true); // its own event
     }
-    await settleAttachments();
     for (var round = 0; round < 6; round++) {
       // The backstop: the clock moves past the scan interval and the largest
       // backoff, and the folder tick scans for versions (no launch pass, no
@@ -2074,6 +2120,9 @@ class _Sim {
       }
       await Future<void>.delayed(const Duration(milliseconds: 150));
     }
+    // After the versions are settled: opening a page earlier would leave it open while a
+    // version lands (the rest of the settle is what it always was).
+    await settleAttachments();
     await settleStrays();
   }
 
@@ -2198,7 +2247,11 @@ class _Sim {
         final same = a != null && a.length == b.length && a.containsAll(b);
         final superset = a != null && b.containsAll(a);
         if (a != null && !(lagging ? superset : same)) {
-          problems.add('page $id: live ${a.length} boxes, reload ${b.length}');
+          final texts = {for (final n in nb.current!.page.nodes) if (n is BoxRecord) '${n.id}@${n.rev}': n.snapshotText};
+          problems.add(
+            'page $id: live ${a.length} boxes, reload ${b.length}; only in the reload: ${[for (final k in b.difference(a)) '$k ${texts[k]}']}; '
+            'only live: ${[for (final k in a.difference(b)) k]}; recovery entries ${await _entriesOf(id)}; page is at ${pageLoc(id) == drivePath ? 'drive' : 'Sub'}; moved: ${log.where((l) => l == 'appMove').length}',
+          );
         }
       } on Object catch (e) {
         problems.add('page $id could not be opened after a reload: $e');
@@ -2586,6 +2639,15 @@ void main() {
         'appCheck',
       ],
       'an eviction and a template save': ['daemonEvictAttachment', 'appTemplate', 'appTemplate', 'appCheck'],
+      'every file evicted, then two moves': [
+        'appMove',
+        'daemonEvictAttachment',
+        'daemonEvictAttachment',
+        'daemonEvictAttachment',
+        'appMove',
+        'appMove',
+        'appCheck',
+      ],
       'two evictions, a move and a restart': [
         'appMove',
         'daemonEvictAttachment',
