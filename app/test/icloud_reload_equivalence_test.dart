@@ -2500,8 +2500,14 @@ Future<void> _sequence(
         // hold the coordinator: without this the next seed fails at
         // registerCoordinator ("Another storage coordinator is registered").
         // dispose is idempotent.
+        // A folder access that throws is only logged: the seed's own failure
+        // stays the one reported, and the other accesses are still disposed.
         for (final f in s.w.folders) {
-          f.dispose();
+          try {
+            f.dispose();
+          } on Object catch (e) {
+            debugPrint('seed $seed: disposing a folder access failed: $e');
+          }
         }
       }
     }
