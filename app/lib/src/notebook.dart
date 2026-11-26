@@ -8094,6 +8094,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     List<AttachmentCopy> copies, {
     required bool turnHeld,
   }) async {
+    var assetsKept = false; // the delete kept assets a surviving copy may need
     try {
       final file = TemplateStore(dir).fileFor(template.id);
       if (FileSystemEntity.typeSync(file.path, followLinks: false) == FileSystemEntityType.file) {
@@ -8101,9 +8102,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         if (await ContentIdentity.ofFile(file.path) == written) {
           final item = TemplateItem(template, file.path, binder, written, binderId: snap.id);
           if (turnHeld) {
-            await _deleteTemplateNow(item, snap);
+            assetsKept = await _deleteTemplateNow(item, snap);
           } else {
-            await _templateTurn(() => _deleteTemplateNow(item, snap));
+            assetsKept = await _templateTurn(() => _deleteTemplateNow(item, snap));
           }
         }
       }
@@ -8116,6 +8117,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         FileSystemEntityType.notFound) {
       return;
     }
+    if (assetsKept) return; // the survivor check kept them: another copy of the template may need them
     for (final c in copies) {
       await removeCreated(c);
     }
@@ -8270,7 +8272,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return _templateTurn(() => _deleteTemplateNow(item, snap));
   }
 
-  Future<void> _deleteTemplateNow(TemplateItem item, _TemplateSnap snap) async {
+  // Returns whether any of the template's assets were kept (shared with a copy that
+  // survives, changed, or the binder changed).
+  Future<bool> _deleteTemplateNow(TemplateItem item, _TemplateSnap snap) async {
     final binder = item.binderPath;
     final dir = _templatesDirFor(binder);
     try {
@@ -8279,10 +8283,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         throw const NotebookException('The template changed since it was listed; it was not deleted.');
       }
       try {
-        await _cleanTemplateAssets(dir, item, binder, snap);
+        return await _cleanTemplateAssets(dir, item, binder, snap);
       } on NotebookException {
         // The file is gone and the picker drops it; what is left stays.
         _templateNotice('The template was deleted; the binder changed, so its files were kept.');
+        return true;
       }
     } on FileSystemException catch (e) {
       throw NotebookException('Could not delete the template: ${e.message}');
@@ -8352,16 +8357,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // (anything else stays), then the emptied folders, bottom-up and
   // non-recursively. Every step passes the binder gate, and every file delete
   // the survivor check again.
-  Future<void> _cleanTemplateAssets(Directory dir, TemplateItem item, String? binder, _TemplateSnap snap) async {
+  // True when something was kept (shared with a template copy that survives, a file
+  // that is not the template's, or a step refused).
+  Future<bool> _cleanTemplateAssets(Directory dir, TemplateItem item, String? binder, _TemplateSnap snap) async {
     final id = item.template.id;
     final assets = Directory('${dir.path}${Platform.pathSeparator}$id.assets');
-    if (!_plainName.hasMatch(id) || _key(assets.parent.absolute.path) != _key(dir.absolute.path)) return;
-    if (!_mayTouch(dir.path)) return; // an iCloud root not yet tested: nothing is swept or deleted
-    if (!await assets.exists()) return;
+    if (!_plainName.hasMatch(id) || _key(assets.parent.absolute.path) != _key(dir.absolute.path)) return true;
+    if (!_mayTouch(dir.path)) return true; // an iCloud root not yet tested: nothing is swept or deleted
+    if (!await assets.exists()) return false;
     final known = <String, String>{};
     if (await _templateAssetsShared(dir, id, known)) {
       _templateNotice(_assetsKeptShared);
-      return;
+      return true;
     }
     // Each step is its own short turn at the binder's folder (T2): a save of
     // the folder waits for one step at most, and a hold set between steps is
@@ -8405,7 +8412,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     if (shared) {
       _templateNotice(_assetsKeptShared);
-      return;
+      return true;
     }
     dirs.sort((a, b) => b.path.length.compareTo(a.path.length)); // the deepest first
     for (final d in dirs) {
@@ -8423,6 +8430,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (kept.isNotEmpty) {
       _templateNotice('The template was deleted; some of its files were kept: ${kept.join(', ')}.');
     }
+    return kept.isNotEmpty;
   }
 
   /// Creates a page from the page template [template] and opens it, placed
@@ -8517,7 +8525,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final made = template.instantiateBinder();
     final pages = storeFactory(dir);
     final written = <NotedPage>[];
-    final copies = <AttachmentCopy>[]; // each page's copy of its template files, removed on a failure
+    final copies = <String, AttachmentCopy>{}; // by new page id: its copy of its template files
     var binderWritten = false;
     try {
       final binderIdentity = _identityOf(() => made.binder.write());
@@ -8579,7 +8587,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         final src = _safeTemplateAssets(templates, template.id, template.pages[i].id);
         if (src == null) continue;
         final c = AttachmentCopy();
-        copies.add(c);
+        copies[made.pages[i].id] = c;
         await _copyDirNotify(
           src,
           Directory('${dir.path}${Platform.pathSeparator}${assetsFolderName(made.pages[i].id)}'),
@@ -8590,12 +8598,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         if (c.notDownloaded.isNotEmpty) throw _downloadRefusal(c.notDownloaded);
       }
     } on Object catch (e) {
-      // What the copies made goes first (their own checked deletes only).
-      for (final c in copies) {
-        await removeCreated(c);
-      }
       // Only what was published here goes, and only while it still holds what
-      // was written; anything that changed since is kept.
+      // was written; anything that changed since is kept. A page's copied files go
+      // only when its own file was deleted (or was already gone): a page that
+      // survives keeps its attachments.
       for (final p in written) {
         try {
           final r = await folderLocks.run(pages.directory, () async {
@@ -8603,7 +8609,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
             if (r.deleted) _emitDeleted(pages.pathFor(p.id));
             return r;
           });
-          if (!r.deleted && r.outcome != DeleteOutcome.absent) debugPrint('Keeping page ${p.id}: it changed');
+          if (!r.deleted && r.outcome != DeleteOutcome.absent) {
+            debugPrint('Keeping page ${p.id}: it changed');
+          } else {
+            await removeCreated(copies[p.id]);
+          }
         } on Object catch (e2) {
           debugPrint('Removing page ${p.id} failed: $e2');
         }

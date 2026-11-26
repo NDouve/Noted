@@ -438,6 +438,23 @@ void main() {
           expect(files(modes[mode]!.dir()).where((f) => f.endsWith(name2)), isNotEmpty);
         });
 
+        test('a copy of the template that survives keeps the assets when the rollback deletes the file (0172)', () async {
+          nb.templatePublishedHook = (path) async {
+            // Another device's copy of the same template, named from its id.
+            File('$path.sync-copy').writeAsStringSync(File(path).readAsStringSync());
+            throw FileSystemException('the folder went away', path);
+          };
+          await expectLater(within(modes[mode]!.save()), throwsA(isA<NotebookException>()));
+          nb.templatePublishedHook = null;
+          expect(templateFiles(modes[mode]!.dir()), isEmpty, reason: 'the rollback deleted the file');
+          expect(files(modes[mode]!.dir()).where((f) => f.endsWith('.sync-copy')), hasLength(1));
+          expect(
+            files(modes[mode]!.dir()).where((f) => f.endsWith('.bin')),
+            isNotEmpty,
+            reason: 'the surviving copy may need the assets',
+          );
+        });
+
         test('with nothing evicted the save still works, template and assets together', () async {
           await within(modes[mode]!.save());
           expect(templateFiles(modes[mode]!.dir()), hasLength(1));
@@ -524,6 +541,38 @@ void main() {
       attachmentBeforePublishHook = null;
       expect(File('${target.path}$sep$binderFileName').existsSync(), isFalse);
       expect(files(target), isEmpty, reason: 'pages and copies were removed');
+    });
+
+    test('a binder from a template: a page that sync changed keeps its attachments when a later file is evicted', () async {
+      final inB2 = await nb.createPage(binderPath: binder.path);
+      put(assetsOf(binderDir, inB2), name, good);
+      put(assetsOf(binderDir, inB2), name2, good2);
+      final t = await nb.saveBinderAsTemplate(binder.path, name: 'T');
+      final tDir = Directory('${templates.path}$sep${t.id}.assets');
+      final target = await Directory('${root.path}/NewBinder3').create();
+      String? first;
+      var changed = false;
+      attachmentBeforePublishHook = (to) async {
+        final dirName = to.replaceAll(r'\', '/').split('/').reversed.skip(1).first; // <new id>.assets
+        first ??= dirName;
+        if (dirName == first || changed) return;
+        changed = true;
+        // Sync changes the page that was published first, then a file is evicted.
+        final page = File('${target.path}$sep${first!.replaceAll('.assets', '')}.canvas');
+        page.writeAsStringSync('${page.readAsStringSync()} ');
+        for (final f in tDir.listSync(recursive: true).whereType<File>()) {
+          debugMarkDataless(f.path);
+        }
+      };
+      await expectLater(within(nb.createBinderFromTemplate(t, target.path)), throwsA(isA<NotebookException>()));
+      attachmentBeforePublishHook = null;
+      expect(changed, isTrue, reason: 'the second page was reached');
+      final survivors = target.listSync().whereType<File>().where((f) => f.path.endsWith('.canvas')).toList();
+      expect(survivors, hasLength(1), reason: 'only the page that sync changed stays; the others were deleted');
+      final id = survivors.single.path.replaceAll(r'\', '/').split('/').last.replaceAll('.canvas', '');
+      expect(names(assetsOf(target, id)), isNotEmpty, reason: 'and it keeps its attachments');
+      expect(target.listSync().whereType<Directory>().where((d) => !d.path.endsWith('$id.assets') && d.path.endsWith('.assets')), isEmpty,
+          reason: 'the deleted pages lost their copies');
     });
 
     test('a binder from a template whose assets are not downloaded is refused, and no binder is made', () async {

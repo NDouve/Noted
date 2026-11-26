@@ -808,8 +808,8 @@ class _Sim {
     attachmentBeforePublishHook = (target) async => point('attachment:copy');
     // 0150: a stray folder the app declines to move says so (once); that is its answer.
     n.attachmentNotices.listen((m) {
-      final d = RegExp(r'of "(.*)" stayed in .*may still be the page').firstMatch(m);
-      if (d != null) declinedTitles.add(d.group(1)!);
+      final d = RegExp(r'of "(.*)" stayed in (.*): a file there may still be the page').firstMatch(m);
+      if (d != null) declinedAt.add((title: d.group(1)!, place: _norm(d.group(2)!)));
     });
     return n;
   }
@@ -1332,12 +1332,24 @@ class _Sim {
   // The files each template of this sequence had at its save: template id -> page and files.
   final Map<String, ({String page, Map<String, Uint8List> files})> savedTemplates = {};
   // The titles of the pages whose stray folder the app said it left where it was (0150).
-  final Set<String> declinedTitles = {};
+  final List<({String title, String place})> declinedAt = [];
 
   // Whether the app said, for page [id] by its title, that it left the folder where it was.
-  bool _declinedFor(String id) {
-    final t = (nb.pageTitleOf(id) ?? '').trim();
-    return declinedTitles.contains(t.isEmpty ? 'Untitled' : t);
+  // The app names a stray folder's page by its title and its place, once for each folder.
+  // Page [id]'s stray in [folder] counts as declined when the app said so at least once
+  // for each page of that title that has a stray there.
+  bool _declinedFor(String id, String folder) {
+    String titleOf(String p) {
+      final t = (nb.pageTitleOf(p) ?? '').trim();
+      return t.isEmpty ? 'Untitled' : t;
+    }
+
+    final title = titleOf(id);
+    final place = folder == drivePath ? 'pages' : _norm(subDir.path);
+    bool strayIn(String p) => Directory('$folder/$p.assets').existsSync();
+    final strays = [for (final p in pageIds) if (titleOf(p) == title && strayIn(p)) p];
+    final said = declinedAt.where((d) => d.title == title && _norm(d.place) == place).length;
+    return said > 0 && said >= strays.length;
   }
   // The attachments' own random numbers and counter, so the other ops draw what they always drew.
   late final Random arnd = Random(seed * 104729 + 7);
@@ -1673,7 +1685,7 @@ class _Sim {
         for (final other in _locs)
           if (other != loc &&
               (File(_assetPathIn(other, e.key)).existsSync() || File(_stubOf(_assetPathIn(other, e.key))).existsSync()) &&
-              (_mayStillBePage(other, id) || _declinedFor(id)))
+              (_mayStillBePage(other, id) || _declinedFor(id, other)))
             other,
       ].isNotEmpty;
       if (!f.existsSync() && declined) continue;
@@ -1692,7 +1704,7 @@ class _Sim {
         final left = File(_assetPathIn(other, e.key));
         // A stray that 0150 declines (a file there may still be the page) is not a failure,
         // nor a copy whose name is taken at the page's place by the same file (a paste).
-        if (left.existsSync() && pageLoc(id) != null && !_mayStillBePage(other, id) && !_declinedFor(id) && !f.existsSync()) {
+        if (left.existsSync() && pageLoc(id) != null && !_mayStillBePage(other, id) && !_declinedFor(id, other) && !f.existsSync()) {
           out.add(
             'the attachment ${_base(p)} of page $id is left at the old place; ${other == drivePath ? 'drive' : 'Sub'} holds '
             '${[for (final x in Directory(other).listSync(followLinks: false)) _base(x.path)]}, unreadable ${[for (final u in nb.unreadable) '${_base(u.path)} ${u.reason}']}',
@@ -1759,16 +1771,17 @@ class _Sim {
 
   /// Once everything else is settled (the pages are classified), the stray check
   /// runs twice with no quiet wait: what a move left behind comes to its page.
+  bool _hasStrayFiles() => assets.keys.any((k) {
+    final loc = pageLoc(k.substring(0, k.indexOf('|')));
+    if (loc == null) return false;
+    return _locs.any(
+      (o) => o != loc && (File(_assetPathIn(o, k)).existsSync() || File(_stubOf(_assetPathIn(o, k))).existsSync()),
+    );
+  });
+
   Future<void> settleStrays() async {
     // Only when a file really is at a page's old place.
-    final stray = assets.keys.any((k) {
-      final loc = pageLoc(k.substring(0, k.indexOf('|')));
-      if (loc == null) return false;
-      return _locs.any(
-        (o) => o != loc && (File(_assetPathIn(o, k)).existsSync() || File(_stubOf(_assetPathIn(o, k))).existsSync()),
-      );
-    });
-    if (!stray) return;
+    if (!_hasStrayFiles()) return;
     phase = 'settle: strays';
     final quiet = Notebook.strayQuiet;
     Notebook.strayQuiet = Duration.zero;
@@ -1776,9 +1789,12 @@ class _Sim {
       for (final file in pageFiles()) {
         await nb.checkFile(file.path);
       }
-      for (var i = 0; i < 2; i++) {
+      // Twice is what moves a stray whose folder is quiet; a listing that changed between
+      // the two (the download just landed) needs one more.
+      for (var i = 0; i < 4; i++) {
         await nb.checkFolders();
         await nb.discoveryIdle;
+        if (!_hasStrayFiles()) break;
       }
     } finally {
       Notebook.strayQuiet = quiet;
@@ -2694,15 +2710,17 @@ void main() {
     for (final kind in _t2aKillKinds) {
       for (final seed in const [3, 8]) {
         test('a kill at $kind (seed $seed)', () async {
+          _Sim? sim;
           await _sequence(
             seed,
             setUp: (s) {
+              sim = s;
               s.killKind = kind;
               s.killNth = 1;
             },
             plan: const ['appTemplate', 'appCheck', 'daemonForeignAssets', 'appTemplate', 'appTemplate', 'appCheck', 'appTemplate'],
           );
-          expect(_killed, contains(kind), reason: 'the kill point was reached');
+          expect(sim!.killDone, isTrue, reason: 'this sequence reached its kill point');
         }, timeout: const Timeout(Duration(minutes: 4)));
       }
     }
