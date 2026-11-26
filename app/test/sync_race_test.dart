@@ -2465,6 +2465,23 @@ void main() {
         expect(await entries(), isEmpty);
       });
 
+      test('a start with a merged copy\'s entry and its page a stub only: the entry stays, and retires once the page is back', () async {
+        await start();
+        await withCopy();
+        await nb.checkFile(copy);
+        expect(await entries(), hasLength(1));
+        nb.dispose();
+        final back = evict(pathOf(id), stub: true);
+        counting = CountingStore(dir);
+        nb = makeNotebook();
+        await nb.load();
+        expect(await entries(), hasLength(1), reason: 'a stub is not a deleted page');
+        back();
+        await nb.recoverNowForTest();
+        expect(ids(), {box.id, extra.id});
+        expect(await entries(), isEmpty);
+      });
+
       test('at quit with the page back as a stub only: the entry stays', () async {
         await start();
         await withCopy();

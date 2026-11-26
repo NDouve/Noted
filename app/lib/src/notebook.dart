@@ -3038,7 +3038,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     if (oldLoc != null && oldKey != null) {
       final oldPath = _storeOf(oldLoc).pathFor(id);
-      if (_readSync(oldPath) is! StoredMissing) {
+      if (notDownloaded(oldPath) || FileSystemEntity.typeSync(oldPath, followLinks: false) != FileSystemEntityType.notFound) {
         _known.remove(oldKey);
         _knownUnreadable(oldLoc, oldKey, oldPath, blockedWhy ?? 'duplicate page id $id');
       } else {
@@ -11336,9 +11336,13 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // changed nor gone: the replay waits for its change event, the entry
       // stays, and the download is asked for (by the read). Only "no file and no
       // stub", with the folder there, is a page that is not there.
-      final read = await _read(path);
+      // The read and the folder check are one job under the folder lock.
+      final (read, folderThere) = await _underFolderLock(st, () async {
+        final r = await _read(path);
+        return (r, r is! StoredMissing || await st.directory.exists());
+      });
       if (read is StoredNotDownloaded) return false;
-      if (read is StoredMissing && !await st.directory.exists()) return false;
+      if (read is StoredMissing && !folderThere) return false;
       if (read is! StoredMissing) {
         try {
           if (read is StoredFailed) throw read.error;
@@ -12721,7 +12725,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // looked at again.
     if (!_disposed && !isDataless(path)) await _recheckCopiesWaitingFor(path);
     if (_disposed || id == null) return;
-    if (await FileSystemEntity.type(path) != FileSystemEntityType.notFound) return;
+    if (notDownloaded(path) || await _read(path) is! StoredMissing) return;
     // The file is gone: the files listed as duplicates of its page are looked
     // at again (their last known text is forgotten, so each is read afresh).
     final dupes = [
@@ -13538,6 +13542,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // [openId] is the page the file belongs to; the page on screen may have
   // changed while this waited, and then nothing is blocked (the file is left
   // alone either way, so this still returns true).
+  // The reason [_blockOpen] is given for a page whose file is not downloaded.
+  static const String _downloadingWhy = 'it is still downloading';
+
   Future<bool> _blockOpen(String loc, String key, String why, String openId) async {
     if (_disposed) return false;
     final c = _current;
@@ -13559,7 +13566,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _diskBlockId = openId;
     _diskBlockWhy = why;
     final kept = _blockKeep?.safe ?? true;
-    _diskBlockReason = kept
+    _diskBlockReason = why == _downloadingWhy
+        ? (kept
+              ? 'This page is read-only while its file downloads. Your edits are kept in recovery.'
+              : 'This page is read-only while its file downloads. Your edits could not be kept in recovery, so they exist only on screen. Use Save a copy elsewhere or Copy page text.')
+        : kept
         ? 'This page is read-only: its file was replaced and $why. '
               'Your edits are kept in recovery. Put back a readable version, or open another page.'
         : 'This page is read-only: its file was replaced and $why. '
@@ -15333,7 +15344,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   Future<String> _whyUnreadable(String path, String id) async {
     try {
       final r = await _read(path);
-      if (r is StoredNotDownloaded) return 'it is still downloading';
+      if (r is StoredNotDownloaded) return _downloadingWhy;
       if (r is StoredFailed) throw r.error;
       final page = readPage(utf8.decode((r as StoredBytes).bytes));
       return page.id != id ? 'it holds a different page' : "it isn't a page this version of Noted can read";
@@ -15407,7 +15418,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           return (ran: true, theirs: null);
         // Not downloaded: asked for; read-only until it is there, then merged.
         case StoredNotDownloaded():
-          if (_current == c) await _blockOpen(loc, _key(path), 'it is still downloading', id);
+          if (_current == c) await _blockOpen(loc, _key(path), _downloadingWhy, id);
           return (ran: false, theirs: null);
         case StoredFailed(:final error):
           throw error;

@@ -20,7 +20,7 @@ import 'package:flutter_test/flutter_test.dart';
 /// The calls that read a file's data, or open it (every `.open(` of anything:
 /// write-only opens and opens of something that is not a file are listed too).
 final RegExp _calls = RegExp(
-  r'\.(readAsBytes|readAsString|readAsLines|openRead|copy|open)(Sync)?\(',
+  r'\.(readAsBytes|readAsString|readAsLines|openRead|copy|open)(Sync)?\b(?!\w)',
 );
 
 // -- The allow-list --------------------------------------------------------------
@@ -122,6 +122,14 @@ const Map<String, _Allowed> _allowed = {
   'app/lib/src/import/folder_store.dart::_Forward.open::open': (count: 1, reason: _notFile),
   'app/lib/src/import/import_images.dart::renderPdfPages::open': (count: 1, reason: _notFile),
 
+  'app/lib/src/import/import_source.dart::ImportSource.ImportSource.fromFile::readAsBytes': (count: 1, reason: _picked),
+  'app/lib/src/notebook.dart::Notebook._mergeConflictCopy::open': (count: 1, reason: _notFile),
+  'app/lib/src/notebook.dart::Notebook._postIncomplete::copy': (count: 4, reason: _notFile),
+  'app/lib/src/notebook.dart::Notebook._undoDeleteNow::copy': (count: 1, reason: _notFile),
+  'app/lib/src/notebook.dart::Notebook.pagesThatLostAiAccess::open': (count: 1, reason: _notFile),
+  'app/lib/src/notebook.dart::_ReplayFailure.toString::copy': (count: 1, reason: _notFile),
+  'packages/noted_mcp/lib/src/tools.dart::NotedTools._canRead::open': (count: 1, reason: _notFile),
+
   // t2a routes the attachment sites next, in the same lane, and deletes these
   // entries (a stale entry fails this test).
   'app/lib/src/notebook.dart::Notebook._holdsContent::readAsBytes': (count: 2, reason: _t2a),
@@ -150,17 +158,19 @@ final w = r'o.open() \';
 final x = """multi
 p.open() """;
 q.readAsBytes();
+final tearOff = r.readAsBytes;
 ''';
       final code = stripSource(src);
       final found = [for (final m in _calls.allMatches(code)) code.substring(m.start - 1, m.start)];
       // Real calls: a (line 1), the two inside ${...}, and q.
       expect(_calls.allMatches(code).map((m) => code.substring(m.start - 1, m.end)).toList(), [
-        'a.readAsString(',
-        'i.readAsString(',
-        'j.readAsString(',
-        'q.readAsBytes(',
+        'a.readAsString',
+        'i.readAsString',
+        'j.readAsString',
+        'q.readAsBytes',
+        'r.readAsBytes',
       ]);
-      expect(found, ['a', 'i', 'j', 'q']);
+      expect(found, ['a', 'i', 'j', 'q', 'r']);
       expect(code.length, src.length, reason: 'positions are kept');
     });
 

@@ -1725,7 +1725,7 @@ void main() {
         if (!stub) debugMarkDataless(file.path);
         await nb.checkFolders();
         expect(nb.current!.readOnly, isTrue, reason: 'not editable while its file is not there to merge');
-        expect(nb.readOnlyReason, contains('still downloading'));
+        expect(nb.readOnlyReason, 'This page is read-only while its file downloads. Your edits are kept in recovery.');
         expect(asked.map((p) => p.replaceAll(r'\', '/')), contains(file.path.replaceAll(r'\', '/')));
         if (stub) {
           expect(file.existsSync(), isFalse, reason: 'nothing was written over the stub');

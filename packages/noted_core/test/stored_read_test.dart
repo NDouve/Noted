@@ -106,15 +106,22 @@ void main() {
   test('an ask that throws, synchronously or later, never reaches the caller', () async {
     File(p('.a.canvas.icloud')).writeAsStringSync('');
     final uncaught = <Object>[];
+    final logged = <String>[];
+    storedReadLog = logged.add;
+    addTearDown(() => storedReadLog = print);
     await runZonedGuarded(() async {
       final sync = await readStored(p('a.canvas'), ask: (_) => throw StateError('now'));
       final later = await readStored(p('a.canvas'), ask: (_) async => throw StateError('later'));
       expect(sync, isA<StoredNotDownloaded>());
       expect(later, isA<StoredNotDownloaded>());
       expect(readStoredSync(p('a.canvas'), ask: (_) => throw StateError('now')), isA<StoredNotDownloaded>());
+      await readStored(p('a.canvas'), ask: (_) async => 'no channel');
       await Future<void>.delayed(const Duration(milliseconds: 20));
     }, (e, s) => uncaught.add(e));
     expect(uncaught, isEmpty);
+    expect(logged.where((m) => m.contains('now')), hasLength(2));
+    expect(logged.where((m) => m.contains('later')), hasLength(1));
+    expect(logged.where((m) => m.contains('no channel')), hasLength(1));
   });
 
   test('bad UTF-8 makes text throw the FileSystemException readAsString throws', () async {

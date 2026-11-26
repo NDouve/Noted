@@ -109,12 +109,21 @@ void _observe(String path) {
 /// dataless file, or a stub with no file). Metadata only.
 bool notDownloaded(String path) => isDataless(path);
 
+/// Where a failed or refused ask is reported (a test seam; the app may set it to
+/// its own log). It must not throw.
+void Function(String message) storedReadLog = print;
+
 /// Asks for a download without letting the ask reach the caller: an [ask] that
-/// throws, here or later, is dropped.
+/// throws, here or later, is logged and dropped; so is a message it answers with.
 void askSafely(String path, DownloadAsk? ask) {
   if (ask == null) return;
   unawaited(
-    Future<String?>.sync(() => ask(path)).then<void>((_) {}, onError: (Object _) {}),
+    Future<String?>.sync(() => ask(path)).then<void>(
+      (message) {
+        if (message != null) storedReadLog('Noted: asking for the download of $path: $message');
+      },
+      onError: (Object e) => storedReadLog('Noted: asking for the download of $path failed: $e'),
+    ),
   );
 }
 
