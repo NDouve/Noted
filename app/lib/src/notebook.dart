@@ -3785,13 +3785,15 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final hydrated = await _hydrateFolder(from, to.path);
       await syncHook?.call('move-dir-before-lock', from.path); // between the caller's gate and the turn
       final damaged = <DamagedKept>[];
+      final holding = <String>[]; // not downloaded (Apple): asked for and left at the source
       try {
         final r = await _underPair(
           _lockDirOfAssets(from),
           _lockDirOfAssets(to),
-          () => _moveFolder(from, to, kept: damaged, hydrated: hydrated, stopOnCannot: true),
+          () => _moveFolder(from, to, kept: damaged, hydrated: hydrated, stopOnCannot: true, downloading: holding),
         ); // gated in the turn (0184): a hold planted since the caller's `_gateMove` refuses
         copy.damagedKept.addAll(damaged);
+        copy.notDownloaded.addAll(holding);
         if (r.outcome == MoveOutcome.cannotRename) {
           cannotRename = true;
           if (!fromTrash) {
@@ -3902,6 +3904,17 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return out;
   }
 
+  // Names the files an incomplete move or put-back left in [sourcePlace] because
+  // they are not downloaded.
+  void _postDownloading(_IncompleteAttachments e, String sourcePlace) {
+    if (_notices.isClosed || e.notDownloaded.isEmpty) return;
+    final names = e.notDownloaded.map((n) => '"${_baseName(n)}"').toList();
+    _notices.add(
+      'Still downloading, left in $sourcePlace: '
+      '${names.length <= 3 ? names.join(', ') : '${names.take(3).join(', ')} and ${names.length - 3} more'}.',
+    );
+  }
+
   /// What a move that stopped says: what [_copyNotices] says, the files that
   /// differ from what is at the destination, and files left in the source.
   void _postIncomplete(_IncompleteAttachments e, String targetPlace, String sourcePlace) {
@@ -3916,14 +3929,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         'The original${n == 1 ? '' : 's'} stay in $sourcePlace.',
       );
     }
-    if (e.notDownloaded.isNotEmpty) {
-      final names = e.notDownloaded.map((n) => '"${_baseName(n)}"').toList();
-      _notices.add(
-        'Still downloading, left in $sourcePlace: '
-        '${names.length <= 3 ? names.join(', ') : '${names.take(3).join(', ')} and ${names.length - 3} more'}.',
-      );
-    }
-    if (e.leftover) {
+    _postDownloading(e, sourcePlace);
+    if (e.leftover && e.notDownloaded.isEmpty) {
       _notices.add('Some attachment files could not be moved out of $sourcePlace, so they were left there.');
     }
   }
@@ -5091,7 +5098,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           'the folder of deleted pages',
         );
       } on Object catch (e) {
-        if (e is _IncompleteAttachments) _postCopyNotices(e.copy, 'the page', 'the folder of deleted pages');
+        if (e is _IncompleteAttachments) {
+          _postCopyNotices(e.copy, 'the page', 'the folder of deleted pages');
+          _postDownloading(e, 'the folder of deleted pages');
+        }
         debugPrint('Restoring the attachments of page $id failed: $e');
         attachmentsLeft.add(dir.path);
         leftIds.add(id);
@@ -5949,6 +5959,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }) async {
     final left = <String>[];
     final apple = appleMode();
+    // An evicted folder is not listed, moved or removed: it is asked for and stays.
+    if (apple && notDownloaded(from.path)) {
+      askSafely(from.path, askDownload);
+      downloading?.add(from.path);
+      return [from.path];
+    }
     // Asks for [path] (the file a stub stands for, or the file or folder itself),
     // and leaves [e] where it is.
     void holdBack(FileSystemEntity e, String path) {
@@ -8093,6 +8109,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
     } on Object catch (e) {
       debugPrint('Rolling back the saved template failed: $e');
+    }
+    // The copies go only when no template file stands: one that is still listed
+    // (the rollback was refused, or the file changed) keeps its assets.
+    if (FileSystemEntity.typeSync(TemplateStore(dir).fileFor(template.id).path, followLinks: false) !=
+        FileSystemEntityType.notFound) {
+      return;
     }
     for (final c in copies) {
       await removeCreated(c);

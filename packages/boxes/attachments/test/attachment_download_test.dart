@@ -109,7 +109,7 @@ void main() {
       await t.tap(box);
       await t.pump(const Duration(milliseconds: 400));
       expect(s.opened, isEmpty);
-      expect(s.notices, ['Downloading. It will open once it is here.']);
+      expect(s.notices, ["This file is still downloading. Open it again once it's here."]);
       // Retry asks again.
       await t.tap(find.byKey(const ValueKey('download-retry')));
       await t.pump(const Duration(milliseconds: 400)); // the box's double-click window

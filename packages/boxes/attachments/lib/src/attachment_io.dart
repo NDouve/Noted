@@ -216,7 +216,7 @@ AttachmentDownload downloadOf(AttachmentRef ref, AttachmentStore? store) {
 }
 
 /// Shown when a file that is not downloaded yet is opened.
-const String downloadingOpenNotice = 'Downloading. It will open once it is here.';
+const String downloadingOpenNotice = "This file is still downloading. Open it again once it's here.";
 
 /// Shown when a file that is not downloaded yet is pasted onto a page.
 const String downloadingPasteNotice = 'This file is still downloading. Try again in a moment.';

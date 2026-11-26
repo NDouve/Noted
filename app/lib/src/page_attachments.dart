@@ -40,7 +40,7 @@ String safeOpenFileName(String name) {
 }
 
 /// The notice shown when a file that is not downloaded yet is opened.
-const String downloadingOpenNotice = 'Downloading. It will open once it is here.';
+const String downloadingOpenNotice = "This file is still downloading. Open it again once it's here.";
 
 /// The notice shown when a file too large to embed goes to the folder.
 const String overLimitNotice =

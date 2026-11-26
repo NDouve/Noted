@@ -88,6 +88,11 @@ FolderWalk folderWalk(String dir) {
     }
   }
 
-  walk(dir);
+  // The folder itself first: an evicted folder is asked for and never listed.
+  if (isDataless(dir)) {
+    missing.add(dir);
+  } else {
+    walk(dir);
+  }
   return FolderWalk(files, missing, stubs);
 }
