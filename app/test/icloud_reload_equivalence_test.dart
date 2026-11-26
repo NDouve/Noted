@@ -2420,7 +2420,7 @@ Future<void> _sequence(
       }
 
       await whole().timeout(
-        const Duration(seconds: 45),
+        const Duration(seconds: 90), // a loaded machine (the whole suite) is slower: t2a adds steps
         onTimeout: () => throw StateError(
           'seed $seed hung in ${s.phase}; steps: ${s.log.join(', ')}',
         ),
