@@ -195,6 +195,27 @@ void main() {
       });
     });
 
+    testWidgets('one high-frequency coefficient after 62 zeros needs three ZRL symbols', (t) async {
+      await t.runAsync(() async {
+        // A grey block that is the (7, 7) basis function: after quantising,
+        // its only AC coefficient is the last one in zigzag order, so 62 zeros
+        // come first (three ZRL symbols and a run of 14).
+        const w = 8, h = 8;
+        final rgb = Uint8List(w * h * 3);
+        for (var y = 0; y < h; y++) {
+          for (var x = 0; x < w; x++) {
+            final v = 128 + 100 * cos((2 * x + 1) * 7 * pi / 16) * cos((2 * y + 1) * 7 * pi / 16);
+            final i = (y * w + x) * 3;
+            rgb[i] = rgb[i + 1] = rgb[i + 2] = v.round();
+          }
+        }
+        final jpeg = encodeJpeg(w, h, rgb);
+        final img = await decode(jpeg);
+        expect((img.$1, img.$2), (w, h));
+        expect(meanError(img.$3, rgb), lessThan(6));
+      });
+    });
+
     testWidgets('a gradient and a mix of edges decode close to the original', (t) async {
       await t.runAsync(() async {
         const w = 40, h = 24;
