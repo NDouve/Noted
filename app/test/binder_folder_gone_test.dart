@@ -10,6 +10,7 @@ import 'package:noted/main.dart';
 import 'package:noted/src/home.dart';
 import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
+import 'support/io_trace.dart';
 import 'support/notebook_folder.dart';
 
 void main() {
@@ -261,6 +262,52 @@ void main() {
     expect(folder.existsSync(), isFalse);
   });
 
+  // The reviewer's theory for the CI failure above: the check that finds the
+  // folder back reads a binder file another instance is just replacing (the
+  // file is absent for a moment), so the binder is disabled ("no binder file");
+  // the other instance's publish lands before the binder's watcher is running,
+  // and a disabled binder that isn't "missing" has no later trigger.
+  //
+  // The seam: the first watcher started on the binder's folder after the folder
+  // is back first lets the other instance publish its file, so the watcher
+  // never sees the event. The check read the file before, with it absent.
+  test('a folder check that meets another instance replacing the binder file still brings the binder back', skip: 'Reproduced: the binder stays disabled (fileMissing) with its file on disk. _checkFoldersInner only looks at missing binders; see the PM report. Remove the skip with the fix.', () async {
+    final d = await setUpBinder();
+    final nb = d.nb;
+    final good = binderFile().readAsStringSync();
+    await takeAway();
+    await until(() => d.s.missing, what: 'the binder missing');
+    // The other instance has set the binder file aside, not yet published.
+    File('${away.path}/$binderFileName').deleteSync();
+
+    final previous = IOOverrides.current;
+    var published = false;
+    IOOverrides.global = _PublishBeforeWatch(
+      folder.path,
+      () {
+        if (published) return;
+        published = true;
+        binderFile().writeAsStringSync(good);
+      },
+    );
+    addTearDown(() => IOOverrides.global = previous);
+
+    await bringBack();
+    await until(() => published, what: 'the folder check to start a watcher');
+    IOOverrides.global = previous;
+    // The file is on disk and the folder timer keeps running.
+    expect(binderFile().existsSync(), isTrue);
+    await until(
+      () => nb.binders.single.available,
+      ms: 5000,
+      what: 'the binder back',
+      state: () {
+        final b = nb.binders.single;
+        return 'status ${b.status}, missing ${b.missing}, fileMissing ${b.fileMissing}, reason ${b.reason}';
+      },
+    );
+  });
+
   testWidgets('the sidebar says "On another device" and keeps the pages, greyed', (tester) async {
     tester.view.physicalSize = const Size(1200, 800);
     tester.view.devicePixelRatio = 1;
@@ -292,4 +339,36 @@ void main() {
       opened.clear();
     });
   });
+}
+
+/// File system overrides under which the folder [path]'s first `watch` runs
+/// [beforeWatch] first (another instance's write landing before the watcher is
+/// live). Everything else is the real file system.
+base class _PublishBeforeWatch extends IOOverrides {
+  _PublishBeforeWatch(this.path, this.beforeWatch);
+  final String path;
+  final void Function() beforeWatch;
+
+  static final IOOverrides _plain = _Plain();
+
+  static String _norm(String p) => p.replaceAll(r'\', '/').toLowerCase();
+
+  @override
+  Directory createDirectory(String p) {
+    final real = IOOverrides.runWithIOOverrides(() => Directory(p), _plain);
+    return _norm(p) == _norm(path) ? _WatchHook(real, beforeWatch) : real;
+  }
+}
+
+base class _Plain extends IOOverrides {}
+
+class _WatchHook extends TracingDirectory {
+  _WatchHook(Directory d, this.beforeWatch) : super(d, IoTrace.instance);
+  final void Function() beforeWatch;
+
+  @override
+  Stream<FileSystemEvent> watch({int events = FileSystemEvent.all, bool recursive = false}) {
+    beforeWatch();
+    return super.watch(events: events, recursive: recursive);
+  }
 }
