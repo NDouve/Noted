@@ -34,6 +34,7 @@ String get binderZipDownloadingMessage => appleMode()
 PlaceholderState Function(String path)? debugZipPlaceholderState;
 
 const String binderZipTooLargeMessage = 'This binder is too large to save as a .zip.';
+const String binderZipUnsavedMessage = "Some edits in this binder aren't saved yet. Nothing was saved.";
 const String binderZipKeptChangingMessage = 'This binder kept changing. Try again.';
 
 /// A zip a share made, in the app's temp folder, with the identity it was
@@ -150,6 +151,7 @@ class BinderZipShare {
     this.beforeOwnRead,
     this.afterCapture,
     this.readPause,
+    this.archiveLimit = BinderZipLimits.archiveBytes,
   }) : zipName = zipName ?? '$topName.zip';
 
   final Notebook notebook;
@@ -159,6 +161,9 @@ class BinderZipShare {
   /// The name the notice of a failed share gives (the target's name).
   final String zipName;
   final int rounds;
+
+  /// The largest zip, all of it (1 GiB); lower in tests.
+  final int archiveLimit;
 
   /// Where the zip is built; null makes a fresh folder in the app's temp
   /// folder.
@@ -209,6 +214,7 @@ class BinderZipShare {
     try {
       File(_zip).createSync(exclusive: true);
       _zipIdentity = ContentIdentity.ofBytes(const []);
+      if (notebook.binderHasUnsavedEdits(binderPath)) throw const BinderZipException(binderZipUnsavedMessage);
       var listing = _listOrRefuse(_list());
       var toRead = listing.files.keys.toList();
       for (var round = 1; ; round++) {
@@ -217,7 +223,11 @@ class BinderZipShare {
         await afterCapture?.call(round);
         final _Listing now;
         try {
-          now = await notebook.binderZipJob(binderPath, () async => _list(), metadataOnly: true);
+          now = await notebook.binderZipJob(binderPath, () async {
+            // Edits not on disk (a failed save) refuse it here too; memory only.
+            if (notebook.binderHasUnsavedEdits(binderPath)) return null;
+            return _list();
+          }, metadataOnly: true) ?? (throw const BinderZipException(binderZipUnsavedMessage));
         } on NotebookException catch (e) {
           throw BinderZipException(e.message);
         }
@@ -334,9 +344,10 @@ class BinderZipShare {
           throw BinderZipException("Couldn't read $k. Nothing was saved.");
       }
     }
-    await _append(copied, stamps);
+    // The zip is hashed once, after the round's last append.
+    await _append(copied, stamps, hash: attachments.isEmpty);
     await _removeLocals();
-    await _append(attachments, null);
+    await _append(attachments, null, hash: true);
   }
 
   static bool _deflates(String k) => k.endsWith(PageStore.extension) || k.endsWith('.json');
@@ -365,7 +376,10 @@ class BinderZipShare {
     return (state: ZipAddState.changed, stamp: null, local: null);
   }
 
-  Future<void> _append(List<ZipSource> sources, Map<String, FileStamp>? stamps) async {
+  // A round's appends: only the last records the zip's identity ([hash]); an
+  // earlier one leaves the recorded identity stale until then, so a failure in
+  // between keeps the temp zip rather than removing it unchecked.
+  Future<void> _append(List<ZipSource> sources, Map<String, FileStamp>? stamps, {required bool hash}) async {
     if (sources.isEmpty) return;
     final zip = _zip;
     final at = _end;
@@ -376,11 +390,14 @@ class BinderZipShare {
       at,
       sources,
       fileLimit: BinderZipLimits.fileBytes,
-      archiveLimit: BinderZipLimits.archiveBytes,
+      archiveLimit: archiveLimit,
+      centralBytes: [for (final c in _captured.values) zipCentralBytes(c.record.name)].fold(0, (a, b) => a + b),
       pause: pause,
+      hash: hash,
     );
     _end = r.end;
-    _zipIdentity = r.identity;
+    final id = r.identity;
+    if (id != null) _zipIdentity = id;
     if (r.overArchive) throw const BinderZipException(binderZipTooLargeMessage);
     for (final a in r.added) {
       final k = a.source.name.substring(top.length + 1);
@@ -435,6 +452,8 @@ class BinderZipShare {
     final list = records;
     final path = zip;
     final identity = _zipIdentity = await finishZipInIsolate(path, at, list);
+    // The finished archive, central directory and end record included.
+    if (identity.length > archiveLimit) throw const BinderZipException(binderZipTooLargeMessage);
     return BinderZipMade(zip, identity, _work, ownsDir: workDir == null);
   }
 

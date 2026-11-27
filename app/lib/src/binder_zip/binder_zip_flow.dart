@@ -51,6 +51,8 @@ Future<String?> saveBinderZip(
   assert(Notebook.binderZipJobKind == null, 'a share started inside a binder .zip job');
   nb.binderZipRefuseWhileHeld();
   await nb.flush();
+  // A save that failed leaves its edits in the editor or recovery: refused.
+  if (nb.binderHasUnsavedEdits(b.path)) return binderZipUnsavedMessage;
   final title = b.title;
   final path = await binderZipSavePicker('${binderFolderName(title)}.zip');
   if (path == null) return null;

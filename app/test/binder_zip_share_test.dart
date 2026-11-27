@@ -31,6 +31,7 @@ import 'package:noted_core/src/storage/dataless.dart' show debugMarkDataless, de
 import 'package:noted_core/src/storage/folder_walk.dart' show debugAppleMode, debugListDir;
 
 import 'support/notebook_folder.dart';
+import 'support/trouble_world.dart';
 
 void main() {
   late Directory root;
@@ -281,6 +282,95 @@ void main() {
         throwsA(isA<BinderZipException>().having((e) => e.message, 'm', "Couldn't save Work.zip. Nothing was saved.")),
       );
       expect(taken.readAsStringSync(), 'someone else');
+    });
+  });
+
+  group('the archive limit counts the whole zip', () {
+    test('a zip exactly at the limit is made; one byte under, it is refused', () async {
+      final w = await world();
+      final first = await share(w.nb, w.b).run();
+      final size = first.identity.length;
+      expect(File(first.path).lengthSync(), size);
+      await first.remove();
+      final at = await BinderZipShare(w.nb, w.b.path, topName: 'Work', workDir: work, archiveLimit: size).run();
+      expect(at.identity.length, size);
+      await at.remove();
+      // One byte short: the entries fit, the central directory and end record don't.
+      await expectLater(
+        BinderZipShare(w.nb, w.b.path, topName: 'Work', workDir: work, archiveLimit: size - 1).run(),
+        throwsA(isA<BinderZipException>().having((e) => e.message, 'm', binderZipTooLargeMessage)),
+      );
+      expect(work.listSync(), isEmpty);
+    });
+
+    test("the append check counts each entry's central record and the end record", () {
+      final f = File('${root.path}${sep}a.bin')..writeAsBytesSync(List.filled(100, 7));
+      final zip = '${root.path}${sep}z.zip';
+      final whole = appendZipEntries(zip, 0, [ZipSource('T/a.bin', f.path, deflate: false)], fileLimit: 1 << 20, archiveLimit: 1 << 30);
+      final needed = whole.end + zipCentralBytes('T/a.bin') + zipEndRecordBytes;
+      expect(finishZip(zip, whole.end, [whole.added.single.record!]), needed);
+      final fits = appendZipEntries(zip, 0, [ZipSource('T/a.bin', f.path, deflate: false)], fileLimit: 1 << 20, archiveLimit: needed);
+      expect(fits.overArchive, isFalse);
+      final over = appendZipEntries(zip, 0, [ZipSource('T/a.bin', f.path, deflate: false)], fileLimit: 1 << 20, archiveLimit: needed - 1);
+      expect(over.overArchive, isTrue);
+      final others = appendZipEntries(zip, 0, [ZipSource('T/a.bin', f.path, deflate: false)], fileLimit: 1 << 20, archiveLimit: needed, centralBytes: 1);
+      expect(others.overArchive, isTrue, reason: 'the records of entries already in the zip count too');
+    });
+  });
+
+  group('unsaved edits (R-1)', () {
+    late TroubleWorld t;
+
+    setUp(() async {
+      t = TroubleWorld();
+      await t.init();
+    });
+
+    tearDown(() => t.dispose());
+
+    Future<({Notebook nb, BinderSection b, String page})> failing() async {
+      final nb = t.make();
+      await nb.load();
+      final b = await nb.addBinder(t.other.path);
+      final page = await nb.createPage(binderPath: b.path);
+      await nb.open(page);
+      await nb.flush();
+      return (nb: nb, b: b, page: page);
+    }
+
+    test('a failed save refuses the share, and nothing is published', () async {
+      final f = await failing();
+      t.storeFor(t.other).failWith = accessDenied();
+      f.nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
+      await f.nb.flush();
+      expect(f.nb.trouble.kind, isNot(TroubleKind.saved), reason: 'the save failed');
+      final out = Directory('${t.root.path}${sep}out')..createSync();
+      final target = '${out.path}${sep}Work.zip';
+      binderZipSavePicker = (_) async => target;
+      final said = await saveBinderZip(
+        f.nb,
+        f.b,
+        roots: () => f.nb.exportRefusedFolders,
+        writer: ExportWriter(askReplace: (_) async => true, askPutBack: (_, _) async => false),
+      );
+      expect(said, "Some edits in this binder aren't saved yet. Nothing was saved.");
+      expect(out.listSync(), isEmpty, reason: 'nothing is published');
+      t.storeFor(t.other).failWith = null;
+    });
+
+    test('a save that fails during the share refuses it at the final check', () async {
+      final f = await failing();
+      final dir = Directory('${t.root.path}${sep}ziptemp')..createSync();
+      await expectLater(
+        BinderZipShare(f.nb, f.b.path, topName: 'Work', workDir: dir, afterCapture: (round) async {
+          t.storeFor(t.other).failWith = accessDenied();
+          f.nb.current!.createBoxAt(const Bounds(40, 40, 0, 0));
+          await f.nb.flush();
+        }).run(),
+        throwsA(isA<BinderZipException>().having((e) => e.message, 'm', binderZipUnsavedMessage)),
+      );
+      expect(dir.listSync(), isEmpty);
+      t.storeFor(t.other).failWith = null;
     });
   });
 

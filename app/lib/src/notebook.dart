@@ -7808,6 +7808,29 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     return _lockRun(Directory(path), () => runZoned(job, zoneValues: {_zipJobKey: kind}));
   }
 
+  /// Whether a page of binder [path] has edits that aren't on disk: a save
+  /// still waiting for the autosave timer, save trouble on the open page (its
+  /// edits held in the editor or recovery), or kept edits in recovery that
+  /// haven't landed. Memory only: no file is read, so a binder .zip check job
+  /// may ask it.
+  bool binderHasUnsavedEdits(String path) {
+    final key = _key(_normalizePath(path));
+    bool inBinder(String? id) {
+      final loc = id == null ? null : _loc[id];
+      return loc != null && loc != _standalone && _key(loc) == key;
+    }
+
+    if (inBinder(_pendingSave?.id)) return true;
+    if (_trouble.kind != TroubleKind.saved && inBinder(_trouble.pageId)) return true;
+    final rec = _recovery;
+    if (rec != null) {
+      for (final e in rec.indexEntries) {
+        if (_key(e.folder) == key && isKeptEdit(e) && !rec.isLanded(e.gen)) return true;
+      }
+    }
+    return false;
+  }
+
   /// [_refuseWhileHeld] for the binder .zip commands, before any picker.
   void binderZipRefuseWhileHeld() => _refuseWhileHeld();
 

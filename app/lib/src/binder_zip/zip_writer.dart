@@ -102,6 +102,12 @@ final class ZipAdded {
   final String? error;
 }
 
+/// The bytes of [name]'s central-directory record.
+int zipCentralBytes(String name) => 46 + utf8.encode(name).length;
+
+/// The bytes of the end-of-central-directory record.
+const int zipEndRecordBytes = 22;
+
 /// A test seam: after the source named [name] is open for reading, the writer
 /// creates `<gate>.reached` and waits (up to [limit]) while [gate] exists.
 final class ZipReadPause {
@@ -168,17 +174,22 @@ class _RafSink implements Sink<List<int>> {
 /// file is created when missing; anything past [offset] is cut). Each file is
 /// stamped, read in chunks, and stamped again; a stamp that moved cuts the
 /// entry off and reads the file again, up to [tries] times. Stops at the first
-/// entry that would take the zip past [archiveLimit] (`overArchive`).
+/// entry that would take the zip past [archiveLimit] (`overArchive`), counting
+/// what the finished zip adds: [centralBytes] for the central-directory records
+/// of the entries already in it, each new entry's own record, and the end
+/// record ([zipCentralBytes], [zipEndRecordBytes]).
 ({List<ZipAdded> added, int end, bool overArchive}) appendZipEntries(
   String zipPath,
   int offset,
   List<ZipSource> sources, {
   required int fileLimit,
   required int archiveLimit,
+  int centralBytes = 0,
   int tries = 3,
   ZipReadPause? pause,
 }) {
   final out = <ZipAdded>[];
+  var central = centralBytes;
   final raf = File(zipPath).openSync(mode: FileMode.append);
   var at = offset;
   try {
@@ -211,7 +222,8 @@ class _RafSink implements Sink<List<int>> {
       done ??= ZipAdded(s, ZipAddState.changed);
       final rec = done.record;
       if (rec != null) {
-        if (rec.end > archiveLimit) {
+        central += zipCentralBytes(rec.name);
+        if (rec.end + central + zipEndRecordBytes > archiveLimit) {
           raf.truncateSync(at);
           out.add(ZipAdded(s, ZipAddState.tooLarge));
           return (added: out, end: at, overArchive: true);
@@ -381,21 +393,39 @@ List<ZipRecord> compactZip(String from, String to, List<ZipRecord> records) {
 
 // The isolate calls, made from top-level functions so that a closure never
 // carries its caller's state into the isolate. Each that writes the zip also
-// hashes it right after its last write, in the same isolate, so the identity
-// a later removal checks against is the one recorded when it was written.
+// hashes it once after its last write of a step (the last append of a round,
+// the compaction, the finish), in the same isolate, so the identity a later
+// removal checks against is the one recorded when it was written.
 
 /// [appendZipEntries] in a background isolate, with the zip's identity after
-/// it.
-Future<({List<ZipAdded> added, int end, bool overArchive, ContentIdentity identity})> appendZipEntriesInIsolate(
+/// it when [hash] (the last append of a round) or when it stopped over the
+/// limit, else null.
+Future<({List<ZipAdded> added, int end, bool overArchive, ContentIdentity? identity})> appendZipEntriesInIsolate(
   String zipPath,
   int offset,
   List<ZipSource> sources, {
   required int fileLimit,
   required int archiveLimit,
+  int centralBytes = 0,
   ZipReadPause? pause,
+  bool hash = true,
 }) => Isolate.run(() async {
-  final r = appendZipEntries(zipPath, offset, sources, fileLimit: fileLimit, archiveLimit: archiveLimit, pause: pause);
-  return (added: r.added, end: r.end, overArchive: r.overArchive, identity: await ContentIdentity.ofFile(zipPath));
+  final r = appendZipEntries(
+    zipPath,
+    offset,
+    sources,
+    fileLimit: fileLimit,
+    archiveLimit: archiveLimit,
+    centralBytes: centralBytes,
+    pause: pause,
+  );
+  return (
+    added: r.added,
+    end: r.end,
+    overArchive: r.overArchive,
+    // Over the limit ends the round too.
+    identity: hash || r.overArchive ? await ContentIdentity.ofFile(zipPath) : null,
+  );
 });
 
 /// [compactZip] in a background isolate, with the new zip's identity.

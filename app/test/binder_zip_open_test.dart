@@ -137,6 +137,20 @@ void main() {
       expect(last, ContentIdentity.ofBytes([4, 5]));
     });
 
+    test('a zip gone between the check and the extraction is "can\'t be read", and nothing is written', () {
+      final zip = zipOf([
+        CraftedEntry('Shared/noted-binder.json', binderJson()),
+        CraftedEntry('Shared/$_pageA.canvas', pageText(_pageA)),
+      ]);
+      final plan = checkBinderZip(File(zip).readAsBytesSync());
+      File(zip).deleteSync();
+      final staging = Directory('${root.path}${sep}stage')..createSync();
+      final x = extractBinderZip(zip, staging.path, plan, plan.binderBytes);
+      expect(x.failure, "it can't be read");
+      expect(x.files, isEmpty);
+      expect(staging.listSync(), isEmpty);
+    });
+
     test('createTemp makes a fresh folder each time, its suffix within the length counted', () async {
       final a = await parent.createTemp('.Shared.noted-open-');
       final b = await parent.createTemp('.Shared.noted-open-');

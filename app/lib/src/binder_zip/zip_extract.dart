@@ -91,7 +91,15 @@ ZipExtraction extractBinderZip(String zipPath, String staging, BinderZipPlan pla
   final sep = Platform.pathSeparator;
   String at(List<String> rel) => '$staging$sep${rel.join(sep)}';
   try {
-    final bytes = readZipBytes(zipPath);
+    final Uint8List bytes;
+    try {
+      bytes = readZipBytes(zipPath);
+    } on Object catch (e) {
+      // Gone or locked since the check: a read failure, not a write one.
+      out.detail = e.toString();
+      out.failure = "it can't be read";
+      return out;
+    }
     final ZipReader reader;
     try {
       reader = ZipReader(bytes, binderZipReadLimits);
