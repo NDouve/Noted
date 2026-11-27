@@ -14710,7 +14710,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // Own-file merges refused because they would drop something, by the key of
   // the copy: the hashes of the copy's and the original's text. Not tried
   // again until either text changes.
-  final Map<String, ({int copy, int original})> _ownCopyRefused = {};
+  final Map<String, ({int ofCopy, int ofOriginal})> _ownCopyRefused = {};
 
   // The open page [id] is shown from [copyPath], named as a conflict copy of
   // [originalPath], which holds the same page: [originalPath] is merged into the
@@ -14798,7 +14798,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (original.id != id) return false;
       final refused = _ownCopyRefused[copyKey];
       if (refused != null) {
-        if (refused.copy == copyText.hashCode && refused.original == originalText.hashCode) return false;
+        if (refused.ofCopy == copyText.hashCode && refused.ofOriginal == originalText.hashCode) return false;
         _ownCopyRefused.remove(copyKey);
       }
       var originalTime = DateTime.now().millisecondsSinceEpoch;
@@ -14826,7 +14826,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       final dropped = verifyConflictCopyMerge(readPage(out), snapshot, original, topOfChain: top);
       if (dropped != null) {
         debugPrint('Merging $originalPath into the open page would drop $dropped: not merged');
-        _ownCopyRefused[copyKey] = (copy: copyText.hashCode, original: originalText.hashCode);
+        _ownCopyRefused[copyKey] = (ofCopy: copyText.hashCode, ofOriginal: originalText.hashCode);
         return false;
       }
       await syncHook?.call('own-copy-merged', originalPath);
