@@ -57,7 +57,7 @@ Future<String?> saveBinderZip(
   if (ExportTargetCheck(roots: roots, sandboxed: Platform.isMacOS).refuses(path)) return exportTargetRefusedMessage;
   final name = _baseName(path);
   final stem = name.toLowerCase().endsWith('.zip') ? name.substring(0, name.length - 4) : name;
-  final share = BinderZipShare(nb, b.path, topName: binderZipFolderName([stem, binderFolderName(title)]));
+  final share = BinderZipShare(nb, b.path, topName: binderZipFolderName([stem, binderFolderName(title)]), zipName: name);
   final BinderZipMade made;
   try {
     made = await share.run();

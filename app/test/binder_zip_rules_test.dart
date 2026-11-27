@@ -150,6 +150,13 @@ void main() {
     });
   });
 
+  test('a . or .. component is refused by its own rule, not only by the trailing-dot rule', () {
+    expect(componentProblem('.'), 'empty');
+    expect(componentProblem('..'), 'empty');
+    expect(componentProblem(''), 'empty');
+    expect(componentProblem('a.'), 'ending');
+  });
+
   test('the component rule covers checkWindowsName', () {
     for (final n in ['CON', 'con.txt', 'NUL', 'Aux.json', 'COM1', 'LPT9.x', 'a.', 'a ', 'fine', 'a.b', 'COM10', 'CONX']) {
       var windows = false;

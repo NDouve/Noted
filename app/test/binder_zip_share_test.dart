@@ -257,6 +257,31 @@ void main() {
       );
       expect(work.listSync(), isEmpty);
     });
+
+    test('the temp zip is removed against the identity recorded when it was written, never what is there then', () async {
+      final w = await world();
+      final f = File('${w.folder.path}$sep${w.page}.assets${sep}busy.bin')..writeAsStringSync('0');
+      final zip = File('${work.path}${sep}binder.zip');
+      await expectLater(
+        share(w.nb, w.b, afterCapture: (round) async {
+          f.writeAsStringSync('round $round');
+          // Something else writes the share's temp after its last write.
+          if (round == 3) zip.writeAsStringSync('not what the share wrote');
+        }).run(),
+        throwsA(isA<BinderZipException>()),
+      );
+      expect(zip.readAsStringSync(), 'not what the share wrote', reason: 'a file that changed is kept');
+    });
+
+    test('a share that fails on the file system says so, and leaves what it did not make', () async {
+      final w = await world();
+      final taken = File('${work.path}${sep}binder.zip')..writeAsStringSync('someone else');
+      await expectLater(
+        BinderZipShare(w.nb, w.b.path, topName: 'Work', zipName: 'Work.zip', workDir: work).run(),
+        throwsA(isA<BinderZipException>().having((e) => e.message, 'm', "Couldn't save Work.zip. Nothing was saved.")),
+      );
+      expect(taken.readAsStringSync(), 'someone else');
+    });
   });
 
   group('the folder lock', () {
@@ -440,7 +465,7 @@ void main() {
       expect(asked.first, 'put back Work.zip');
     });
 
-    test('the File menu entry saves the open page\'s binder', () async {
+    test('a save writes every binder file into the zip at the chosen target', () async {
       expect(await save(), 'Saved Work.zip.');
       final zipped = zipFiles(target);
       expect(zipped.keys.toSet(), diskFiles(w.folder).keys.toSet());

@@ -253,6 +253,15 @@ void main() {
       expect(parent.listSync(), isEmpty);
     });
 
+    test('any other failure of the rename rolls back and says the folder was not made', () async {
+      final nb = await started();
+      await expectLater(
+        opener(nb, standardZip(), mover: (from, to, {beforeOsCall}) async => throw StateError('a bug')).run(),
+        throwsA(isA<BinderZipException>().having((e) => e.message, 'message', "Couldn't make the binder's folder: it couldn't be finished.")),
+      );
+      expect(parent.listSync(), isEmpty, reason: 'everything it made was removed');
+    });
+
     test('Z2: a binder file replaced with Open after it is written rolls back and is never renamed', () async {
       final nb = await started();
       String? staging;

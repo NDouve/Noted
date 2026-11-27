@@ -40,7 +40,13 @@ final class ZipExtraction {
 
   /// The identity of the binder file as written, when it was.
   ContentIdentity? binderIdentity;
+
+  /// The error behind [failure], for the log only (never in a notice).
+  String? detail;
 }
+
+/// The reason a write failed, without the OS text.
+const String couldNotWrite = "a file in it couldn't be written";
 
 /// Creates the new file [path] exclusively and writes [bytes] to it in append
 /// mode, flushed. Any [FileSystemException] from the create means it was not
@@ -131,7 +137,8 @@ ZipExtraction extractBinderZip(String zipPath, String staging, BinderZipPlan pla
           }
         });
       } on FileSystemException catch (e) {
-        out.failure = made ? "${f.relative.join('/')} couldn't be written (${e.message})" : '${f.relative.join('/')} was not created';
+        out.detail = e.toString();
+        out.failure = made ? couldNotWrite : '${f.relative.join('/')} was not created';
         return out;
       }
     }
@@ -148,12 +155,15 @@ ZipExtraction extractBinderZip(String zipPath, String staging, BinderZipPlan pla
         }
       });
     } on FileSystemException catch (e) {
-      out.failure = made ? "the binder file couldn't be written (${e.message})" : 'the binder file was not created';
+      out.detail = e.toString();
+      out.failure = made ? couldNotWrite : 'the binder file was not created';
       return out;
     }
     out.binderIdentity = out.files[index].identity;
-  } on FileSystemException catch (e) {
-    out.failure = e.message;
+  } on Object catch (e) {
+    // Anything else (an OS error, a bug): what was created is still returned.
+    out.detail = e.toString();
+    out.failure = couldNotWrite;
   }
   return out;
 }

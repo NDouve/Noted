@@ -99,10 +99,14 @@ const Map<String, _Allowed> _allowed = {
 
   // A binder .zip: the zip a share builds in its own temp folder, read back by
   // the same share (compacted, finished) and by its publish.
+  // This key is appendZipEntries' open of the zip it builds: the scan doesn't
+  // name a declaration whose return type is a record, so the call is keyed by
+  // the declaration before it, _RafSink.close.
   'app/lib/src/binder_zip/zip_writer.dart::_RafSink.close::openSync': (count: 1, reason: _ownTemp),
   'app/lib/src/binder_zip/zip_writer.dart::compactZip::openSync': (count: 2, reason: _ownTemp),
   'app/lib/src/binder_zip/zip_writer.dart::finishZip::openSync': (count: 1, reason: _ownTemp),
-  'app/lib/src/export/exclusive_create.dart::createExclusiveFromFile::openSync': (count: 2, reason: _ownTemp),
+  'app/lib/src/export/exclusive_create.dart::createExclusiveFromFile::openSync': (count: 1, reason: _ownTemp),
+  'app/lib/src/export/exclusive_create.dart::createExclusiveFromFile::openRead': (count: 1, reason: _ownTemp),
   'app/lib/src/export/export_write.dart::ExportWriter._copyTo::openRead': (count: 1, reason: _ownTemp),
 
   // Write-only opens (append or write mode, no read).

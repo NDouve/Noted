@@ -153,14 +153,10 @@ Future<ExclusiveOutcome> createExclusiveFromFile(
     }
     var left = true;
     try {
-      final prefix = File(source).openSync();
-      final Uint8List head;
-      try {
-        head = prefix.readSync(written);
-      } finally {
-        prefix.closeSync();
-      }
-      final r = await deleteFileIfMatches(path, identity: ContentIdentity.ofBytes(head));
+      // The identity of the bytes written: the source's first [written]
+      // bytes, hashed as a stream of chunks, never held whole.
+      final head = ContentIdentity(written, await contentHashOfStream(File(source).openRead(0, written)));
+      final r = await deleteFileIfMatches(path, identity: head);
       left = !r.deleted && r.outcome != DeleteOutcome.absent;
     } on Object {
       left = true;

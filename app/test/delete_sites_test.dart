@@ -650,7 +650,7 @@ const List<Site> exportSites = [
   ('app/lib/src/export/export_write.dart', 'this.publish = publishExclusive,', 1, 'the export publish: never replaces; the probe uses it too'),
   ('app/lib/src/export/export_write.dart', 'published = await publish(tmp, target);', 2, 'the export publish of the staging temp (bytes, or a file: a binder .zip)'),
   ('app/lib/src/export/export_write.dart', 'await deleteFileIfMatches(tmp.path, identity: identity);', 1, "the removal of an unpublished temp streamed from a file, against that file's identity"),
-  ('app/lib/src/export/exclusive_create.dart', 'final r = await deleteFileIfMatches(path, identity: ContentIdentity.ofBytes(head));', 1, "the streamed exclusive create's cleanup: a partial file removed only when it holds the bytes written"),
+  ('app/lib/src/export/exclusive_create.dart', 'final r = await deleteFileIfMatches(path, identity: head);', 1, "the streamed exclusive create's cleanup: a partial file removed only when it holds the bytes written"),
   ('app/lib/src/export/export_write.dart', 'replaceIfUnchanged(tmp, target, null, identity: identity);', 1, 'the checked replace, against the identity read before the prompt'),
   ('app/lib/src/export/export_write.dart', 'await deleteFileIfMatches(path, bytes: bytes);', 1, "the removal of an unpublished temp (and of the probe's names), against the bytes written"),
   ('app/lib/src/export/export_write.dart', 'linked = await publish(a, linkPath);', 1, "the probe's link"),

@@ -380,27 +380,37 @@ List<ZipRecord> compactZip(String from, String to, List<ZipRecord> records) {
 }
 
 // The isolate calls, made from top-level functions so that a closure never
-// carries its caller's state into the isolate.
+// carries its caller's state into the isolate. Each that writes the zip also
+// hashes it right after its last write, in the same isolate, so the identity
+// a later removal checks against is the one recorded when it was written.
 
-/// [appendZipEntries] in a background isolate.
-Future<({List<ZipAdded> added, int end, bool overArchive})> appendZipEntriesInIsolate(
+/// [appendZipEntries] in a background isolate, with the zip's identity after
+/// it.
+Future<({List<ZipAdded> added, int end, bool overArchive, ContentIdentity identity})> appendZipEntriesInIsolate(
   String zipPath,
   int offset,
   List<ZipSource> sources, {
   required int fileLimit,
   required int archiveLimit,
   ZipReadPause? pause,
-}) => Isolate.run(
-  () => appendZipEntries(zipPath, offset, sources, fileLimit: fileLimit, archiveLimit: archiveLimit, pause: pause),
-);
+}) => Isolate.run(() async {
+  final r = appendZipEntries(zipPath, offset, sources, fileLimit: fileLimit, archiveLimit: archiveLimit, pause: pause);
+  return (added: r.added, end: r.end, overArchive: r.overArchive, identity: await ContentIdentity.ofFile(zipPath));
+});
 
-/// [compactZip] in a background isolate.
-Future<List<ZipRecord>> compactZipInIsolate(String from, String to, List<ZipRecord> records) =>
-    Isolate.run(() => compactZip(from, to, records));
+/// [compactZip] in a background isolate, with the new zip's identity.
+Future<({List<ZipRecord> records, ContentIdentity identity})> compactZipInIsolate(
+  String from,
+  String to,
+  List<ZipRecord> records,
+) => Isolate.run(() async {
+  final out = compactZip(from, to, records);
+  return (records: out, identity: await ContentIdentity.ofFile(to));
+});
 
-/// [finishZip] in a background isolate.
-Future<int> finishZipInIsolate(String zipPath, int offset, List<ZipRecord> records) =>
-    Isolate.run(() => finishZip(zipPath, offset, records));
-
-/// The [ContentIdentity] of the file at [path], hashed in a background isolate.
-Future<ContentIdentity> identityInIsolate(String path) => Isolate.run(() => ContentIdentity.ofFile(path));
+/// [finishZip] in a background isolate: the finished zip's identity.
+Future<ContentIdentity> finishZipInIsolate(String zipPath, int offset, List<ZipRecord> records) =>
+    Isolate.run(() async {
+      finishZip(zipPath, offset, records);
+      return ContentIdentity.ofFile(zipPath);
+    });

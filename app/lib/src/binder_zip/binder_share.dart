@@ -13,7 +13,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:isolate';
 
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 import 'package:noted_core/noted_core.dart';
 
 import '../attachment_copy.dart' show removeFolderCoordinated;
@@ -122,10 +122,13 @@ Future<_Copy> _copyOwn(String src, String dst, int fileLimit) async {
     }
     raf.flushSync();
   } on FileSystemException catch (e) {
+    // What reached the copy: each chunk is hashed only after its write, so
+    // the identity is of the bytes written so far, and the copy is removed
+    // against it.
     unawaited(chunks.close());
     raf.closeSync();
-    await hash.then<void>((_) {}, onError: (Object _) {});
-    return (state: ZipAddState.failed, stamp: null, identity: null, error: e.message);
+    final written = ContentIdentity(length, await hash);
+    return (state: ZipAddState.failed, stamp: null, identity: written, error: e.message);
   }
   raf.closeSync();
   unawaited(chunks.close());
@@ -141,16 +144,20 @@ class BinderZipShare {
     this.notebook,
     this.binderPath, {
     required this.topName,
+    String? zipName,
     this.rounds = 3,
     this.workDir,
     this.beforeOwnRead,
     this.afterCapture,
     this.readPause,
-  });
+  }) : zipName = zipName ?? '$topName.zip';
 
   final Notebook notebook;
   final String binderPath;
   final String topName;
+
+  /// The name the notice of a failed share gives (the target's name).
+  final String zipName;
   final int rounds;
 
   /// Where the zip is built; null makes a fresh folder in the app's temp
@@ -169,6 +176,11 @@ class BinderZipShare {
   final List<CreatedLocal> _locals = [];
   late Directory _work;
   late String _zip;
+
+  // The identity of [_zip] as this share last wrote it, recorded in the
+  // isolate that wrote it; null until this share has created it. Every removal
+  // of the zip checks against this, never against what is there then.
+  ContentIdentity? _zipIdentity;
   int _end = 0;
   bool _dead = false;
   int _copies = 0;
@@ -180,10 +192,23 @@ class BinderZipShare {
   /// can't; nothing it made is left then.
   Future<BinderZipMade> run() async {
     assert(Notebook.binderZipJobKind == null, 'a share started inside a binder .zip job');
+    try {
+      return await _run();
+    } on BinderZipException {
+      rethrow;
+    } on FileSystemException catch (e) {
+      // StorageBusy too: a failed share always says so.
+      debugPrint('Saving $zipName failed: $e');
+      throw BinderZipException("Couldn't save $zipName. Nothing was saved.");
+    }
+  }
+
+  Future<BinderZipMade> _run() async {
     _work = workDir ?? await Directory.systemTemp.createTemp('noted-binder-zip-');
     _zip = '${_work.path}${_sep}binder.zip';
-    File(_zip).createSync(exclusive: true);
     try {
+      File(_zip).createSync(exclusive: true);
+      _zipIdentity = ContentIdentity.ofBytes(const []);
       var listing = _listOrRefuse(_list());
       var toRead = listing.files.keys.toList();
       for (var round = 1; ; round++) {
@@ -355,6 +380,7 @@ class BinderZipShare {
       pause: pause,
     );
     _end = r.end;
+    _zipIdentity = r.identity;
     if (r.overArchive) throw const BinderZipException(binderZipTooLargeMessage);
     for (final a in r.added) {
       final k = a.source.name.substring(top.length + 1);
@@ -397,25 +423,26 @@ class BinderZipShare {
       final from = zip;
       final to = '${_work.path}${_sep}binder-1.zip';
       final live = records;
-      records = await compactZipInIsolate(from, to, live);
-      await _removeOwn(from);
+      final old = _zipIdentity!;
+      final c = await compactZipInIsolate(from, to, live);
+      records = c.records;
       zip = _zip = to;
+      _zipIdentity = c.identity;
+      await _removeOwn(from, old);
       end = records.isEmpty ? 0 : records.last.end;
     }
     final at = end;
     final list = records;
     final path = zip;
-    await finishZipInIsolate(path, at, list);
-    final identity = await identityInIsolate(path);
+    final identity = _zipIdentity = await finishZipInIsolate(path, at, list);
     return BinderZipMade(zip, identity, _work, ownsDir: workDir == null);
   }
 
-  // Removes a zip this share built and no longer needs, against what it holds
-  // now (it is in this share's own fresh temp folder).
-  static Future<void> _removeOwn(String path) async {
+  // Removes a zip this share built and no longer needs, against the identity
+  // recorded when it was last written.
+  static Future<void> _removeOwn(String path, ContentIdentity identity) async {
     try {
-      final id = await identityInIsolate(path);
-      await deleteFileIfMatches(path, identity: id);
+      await deleteFileIfMatches(path, identity: identity);
     } on StorageBusy {
       // Kept in the temp folder.
     } on FileSystemException {
@@ -425,7 +452,8 @@ class BinderZipShare {
 
   Future<void> _discard() async {
     await _removeLocals();
-    if (File(_zip).existsSync()) await _removeOwn(_zip);
+    final id = _zipIdentity;
+    if (id != null) await _removeOwn(_zip, id);
     if (workDir == null) await _removeEmpty(_work);
   }
 }

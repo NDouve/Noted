@@ -157,7 +157,8 @@ class BinderZipOpen {
     try {
       staging = await Directory(parentPath).createTemp(stagingPrefix);
     } on FileSystemException catch (e) {
-      throw folderNotMade(e.osError?.message ?? e.message);
+      debugPrint('Making the staging folder failed: $e');
+      throw folderNotMade("the folder you chose can't be written");
     }
     final made = ZipExtraction()..folders.add(staging.path);
     String? why;
@@ -173,6 +174,7 @@ class BinderZipOpen {
           ..folders.addAll(x.folders)
           ..binderIdentity = x.binderIdentity;
         why = x.failure;
+        if (x.detail != null) debugPrint('Opening ${zip.split(RegExp(r'[\\/]')).last} stopped: ${x.detail}');
       }
       if (why != null) throw zipRefused(why);
       await afterExtract?.call(staging.path);
@@ -186,6 +188,11 @@ class BinderZipOpen {
       // below the staging folder.
       if (await _rollback(made)) throw BinderZipException('Not opened. Part of it is left in ${staging.path}.');
       rethrow;
+    } on Object catch (e) {
+      // Anything else (an isolate that died, a bug): rolled back the same way.
+      debugPrint('Opening a binder .zip failed: $e');
+      if (await _rollback(made)) throw BinderZipException('Not opened. Part of it is left in ${staging.path}.');
+      throw folderNotMade("it couldn't be finished");
     }
     return _add(folder, plan, patched);
   }
@@ -237,7 +244,8 @@ class BinderZipOpen {
         } on _ReadBackFailed {
           throw zipRefused('its binder file changed while it was opened');
         } on FileSystemException catch (e) {
-          throw folderNotMade(e.osError?.message ?? e.message);
+          debugPrint('Renaming the staging folder failed: $e');
+          throw folderNotMade("it couldn't be renamed");
         }
         switch (r) {
           case MoveOutcome.moved:
