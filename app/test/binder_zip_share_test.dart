@@ -188,8 +188,13 @@ void main() {
       expect(work.listSync(), isEmpty);
     });
 
-    test('Z4: a failed listing of an assets folder, or of the binder folder, refuses', () async {
+    test('Z4 and N2: a failed listing of an assets folder, or of the binder folder, refuses; nothing is asked for', () async {
       final w = await world();
+      final asked = <String>[];
+      w.nb.askDownload = (p) async {
+        asked.add(p);
+        return null;
+      };
       for (final failing in ['${w.folder.path}$sep${w.page}.assets', w.folder.path]) {
         debugListDir = (d) {
           if (File(d).absolute.path == File(failing).absolute.path) throw FileSystemException('denied', d);
@@ -197,10 +202,12 @@ void main() {
         };
         await expectLater(
           share(w.nb, w.b).run(),
-          throwsA(isA<BinderZipException>().having((e) => e.message, 'm', binderZipDownloadingMessage)),
+          throwsA(isA<BinderZipException>().having((e) => e.message, 'm', "A folder of this binder can't be read. Nothing was saved.")),
           reason: failing,
         );
       }
+      await pumpEventQueue();
+      expect(asked, isEmpty, reason: 'a folder that failed to list is not asked for as a download');
       // A folder outside the binder set that can't be listed is left alone.
       Directory('${w.folder.path}${sep}other').createSync();
       debugListDir = (d) {

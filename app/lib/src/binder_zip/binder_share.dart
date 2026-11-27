@@ -35,6 +35,7 @@ PlaceholderState Function(String path)? debugZipPlaceholderState;
 
 const String binderZipTooLargeMessage = 'This binder is too large to save as a .zip.';
 const String binderZipUnsavedMessage = "Some edits in this binder aren't saved yet. Nothing was saved.";
+const String binderZipUnreadableMessage = "A folder of this binder can't be read. Nothing was saved.";
 const String binderZipKeptChangingMessage = 'This binder kept changing. Try again.';
 
 /// A zip a share made, in the app's temp folder, with the identity it was
@@ -76,10 +77,13 @@ Future<void> _removeEmpty(Directory d) async {
 // What the listing found: each file of the binder set by its path below the
 // binder folder, with its stamp.
 final class _Listing {
-  _Listing(this.files, this.notDownloaded);
+  _Listing(this.files, this.notDownloaded, this.unreadable);
 
   final Map<String, ({List<String> rel, String path, FileStamp stamp})> files;
   final List<String> notDownloaded;
+
+  // Folders of the set whose listing failed (t1-walk): refused, never asked for.
+  final List<String> unreadable;
 }
 
 final class _Captured {
@@ -265,6 +269,7 @@ class BinderZipShare {
       }
       throw BinderZipException(binderZipDownloadingMessage);
     }
+    if (l.unreadable.isNotEmpty) throw const BinderZipException(binderZipUnreadableMessage);
     if (l.files.length > BinderZipLimits.entries) throw const BinderZipException(binderZipTooLargeMessage);
     var total = 0;
     for (final f in l.files.values) {
@@ -283,6 +288,7 @@ class BinderZipShare {
     final root = binderPath;
     final walk = folderWalk(root);
     final missing = <String>[];
+    final unreadable = <String>[];
     List<String> relOf(String path) {
       final rest = path.length > root.length ? path.substring(root.length + 1) : '';
       return rest.isEmpty ? const [] : rest.split(RegExp(r'[\\/]'));
@@ -291,7 +297,7 @@ class BinderZipShare {
     for (final p in walk.notDownloaded) {
       final rel = relOf(p);
       if (rel.isEmpty || folderInBinderSet(rel) || inBinderSet(rel) || inBinderSet([...rel.take(rel.length - 1), stubTargetName(rel.last) ?? rel.last])) {
-        missing.add(p);
+        (walk.unreadable.contains(p) ? unreadable : missing).add(p);
       }
     }
     final files = <String, ({List<String> rel, String path, FileStamp stamp})>{};
@@ -312,7 +318,7 @@ class BinderZipShare {
         if (state(p) != PlaceholderState.notPlaceholder) missing.add(p);
       }
     }
-    return _Listing(files, missing);
+    return _Listing(files, missing, unreadable);
   }
 
   // One round's capture of [keys] (in [listing]): Noted's own files each in a

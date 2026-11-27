@@ -648,6 +648,7 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
         _item(r, AppCommands.binderSettings),
         const NotedMenuDivider(),
         _item(r, AppCommands.binderSaveAsTemplate),
+        if (r[AppCommands.binderSaveZip] != null) _item(r, AppCommands.binderSaveZip),
         const NotedMenuDivider(),
       ],
       _item(r, AppCommands.binderRemove),
