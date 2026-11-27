@@ -1964,7 +1964,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   late final SaveBackoff _backoff = SaveBackoff(
     first: backoffFirst,
     max: backoffMax,
-    onTick: () => unawaited(_backoffTick()),
+    onTick: () => _spawnOutside(() => unawaited(_backoffTick())),
   );
 
   // The recovery index must be rebuilt before the next transaction (the lock
@@ -2710,7 +2710,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     final held = _settingsHeld;
     if (_disposed || held == null || held == _SettingsHold.pending) return;
     final delay = _settingsDelay ??= settingsRetryFirst;
-    _settingsTimer = Timer(delay, () async {
+    _settingsTimer = Timer(delay, () => _spawnOutside(() async {
       _settingsTimer = null;
       _settingsDelaySet = false;
       final ok = await retrySettings();
@@ -2719,7 +2719,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       if (!_settingsDelaySet) _settingsDelay = nextSettingsDelay(delay);
       _settingsDelaySet = false;
       _armSettingsTimer();
-    });
+    }));
   }
 
   // One retry, inside the queue.
@@ -9223,7 +9223,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     _coverTimers[key] = Timer(wait, () {
       _coverTimers.remove(key);
       if (_disposed || _coverHalted.contains(key) || (_coverPending[key]?.isEmpty ?? true)) return;
-      unawaited(_tryCovers(path));
+      _spawnOutside(() => unawaited(_tryCovers(path)));
     });
   }
 
@@ -11436,7 +11436,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     late final Timer t;
     t = m.timer = Timer(after ?? copyRetireAfter, () {
       if (identical(m.timer, t)) m.timer = null;
-      unawaited(_consumedTick(m));
+      _spawnOutside(() => unawaited(_consumedTick(m)));
     });
   }
 
@@ -14823,6 +14823,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (!deleted.deleted && deleted.outcome != DeleteOutcome.absent) throw const _SourceChanged();
   }
 
+  /// A test seam, called in step 8 of the own-file merge, after the re-point
+  /// and before the page is applied (no await between them).
+  @visibleForTesting
+  void Function(String originalPath)? ownCopyRepointHookForTest;
+
   // Own-file merges refused because they would drop something, by the key of
   // the copy: the hashes of the copy's and the original's text. Not tried
   // again until either text changes.
@@ -14867,6 +14872,29 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   }
 
   Future<bool> _mergeOwnCopyJob(String loc, String id, String copyPath, String originalPath) async {
+    final run = _OwnCopyRun();
+    try {
+      return await _mergeOwnCopyRounds(loc, id, copyPath, originalPath, run);
+    } on Object catch (e, s) {
+      if (!run.repointed) rethrow;
+      // The page's file is the original now (step 8 began): that stands, and
+      // the original is never listed as a duplicate of it. Its `_known` is
+      // dropped, so the next look reads it and merges what the screen lacks;
+      // the copy, not retired, is then an ordinary copy of the page.
+      debugPrint('Merging $originalPath into the open page failed after the re-point: $e\n$s');
+      final copyKey = _key(copyPath);
+      final originalKey = _key(originalPath);
+      _pathId.remove(copyKey);
+      _pathId[originalKey] = id;
+      _known.remove(originalKey);
+      _known.remove(copyKey);
+      if (_adoptedFiles[id] case final a? when _key(a) == copyKey) _adoptedFiles[id] = originalPath;
+      if (!_disposed) _dropUnreadable(loc, originalPath);
+      return true;
+    }
+  }
+
+  Future<bool> _mergeOwnCopyRounds(String loc, String id, String copyPath, String originalPath, _OwnCopyRun run) async {
     final copyKey = _key(copyPath);
     final originalKey = _key(originalPath);
     for (var round = 0; round < 3; round++) {
@@ -14972,6 +15000,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // 8. Re-point and apply, with no await in between.
       _base = snapshot;
       st.adopt(id, originalPath);
+      run.repointed = true;
       _pathId.remove(copyKey);
       _pathId[originalKey] = id;
       _known[originalKey] = out;
@@ -14980,6 +15009,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       _fileStamps.remove(copyKey);
       _dropUnreadable(loc, originalPath, rebuild: false);
       if (_adoptedFiles[id] case final a? when _key(a) == copyKey) _adoptedFiles[id] = originalPath;
+      ownCopyRepointHookForTest?.call(originalPath);
       if (identical(c.page, snapshot)) {
         _base = merged;
         c.applyExternal(merged, save: false);
@@ -15874,7 +15904,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     if (e is FileSystemMoveEvent && e.destination != null) seen(e.destination!);
     if (!relevant) return;
     _rootDebounce?.cancel();
-    _rootDebounce = Timer(discoveryDebounce, () => unawaited(discoverBinders()));
+    _rootDebounce = Timer(discoveryDebounce, () => _spawnOutside(() => unawaited(discoverBinders())));
   }
 
   // Folders the events named that hold no binder file yet become fresh folders
@@ -15989,7 +16019,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           null => p,
         },
     ];
-    unawaited(_cloudLook(paths));
+    // A presenter event can arrive while a job runs: it is not part of it.
+    _spawnOutside(() => unawaited(_cloudLook(paths)));
   }
 
   Future<void> _cloudLook(List<String> paths) async {
@@ -16050,7 +16081,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // is tried again.
   void _cloudLanded(VersionLanding l) {
     if (_disposed) return;
-    unawaited(() async {
+    // Delivered by the presenter, maybe while a job runs: not part of it.
+    _spawnOutside(() => unawaited(() async {
       try {
         final dir = File(l.path).parent.path;
         final back = <String>[];
@@ -16060,7 +16092,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       } on Object catch (e) {
         debugPrint('Looking at the landed iCloud versions failed: $e');
       }
-    }());
+    }()));
   }
 
   Future<List<String>> _sweepAfterLanding(String dir) async {
@@ -16103,7 +16135,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // the chosen folders when iCloud folder access is on (M8).
     final cloudChecks = icloud?.active ?? false;
     if (!(watchFiles || cloudChecks) || _disposed || folderCheckInterval <= Duration.zero) return;
-    _folderTimer = Timer.periodic(folderCheckInterval, (_) => _folderTick());
+    _folderTimer = Timer.periodic(folderCheckInterval, (_) => _spawnOutside(_folderTick));
   }
 
   // One tick of the folder timer. The scan for iCloud versions (R5.8, t2b: the
@@ -17646,6 +17678,11 @@ class _HoldRun {
 // Marks the code of one running check-queue job (G3); inactive once it ends.
 class _CheckJob {
   bool active = true;
+}
+
+// One run of an own-file merge: set once step 8 has re-pointed the page.
+class _OwnCopyRun {
+  bool repointed = false;
 }
 
 // A conflict copy that a merge consumed and that is kept as recovery entry

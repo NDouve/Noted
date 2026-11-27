@@ -352,6 +352,37 @@ void main() {
     },
   );
 
+  test('a failure after the re-point: the original stays the page\'s file, is not listed, the next save lands and the copy retires', () async {
+    await start();
+    final a = originalArrives();
+    final e = type('E');
+    nb.ownCopyRepointHookForTest = (_) =>
+        throw StateError('injected after the re-point');
+    await nb.checkFile(copyPath()).timeout(within); // 3a
+    nb.ownCopyRepointHookForTest = null;
+    expect(nb.pageFileForTest(id), originalPath());
+    expect(
+      nb.unreadable.map((u) => u.path),
+      isNot(contains(originalPath())),
+      reason: 'never a duplicate of the page',
+    );
+    final r = await nb.saveOpenPageForTest().timeout(within);
+    expect(r.end, SaveEnd.landed);
+    final disk = read(originalPath());
+    expect(
+      ids(disk),
+      containsAll({baseBox.id, a.id, e.id}),
+      reason: 'the save merged the original first',
+    );
+    expect(ids(nb.current!.page), containsAll({baseBox.id, a.id, e.id}));
+    expect(nb.trouble.isTrouble, isFalse);
+    // The copy, not retired, is an ordinary copy of the page now: its next
+    // check merges it (it adds nothing) and retires it.
+    await nb.checkFile(copyPath()).timeout(within);
+    expect(File(copyPath()).existsSync(), isFalse);
+    expect(nb.unreadable, isEmpty);
+  });
+
   group('the retired copy (codex t8 pre-merge R-1)', () {
     test('a box deleted before the merge is not brought back by the copy\'s re-check', () async {
       await start();
