@@ -93,6 +93,25 @@ void main() {
       expect(identical(fix(base, mineA, mineA, more), more), isTrue);
     });
 
+    test('a box at the same rev with other content is recorded, not "the same version"', () {
+      BoxRecord sameRev(String data) => BoxRecord.create(
+        id: 'a',
+        typeId: 'test.plain',
+        dataVersion: 1,
+        bounds: const Bounds(0, 0, 100, 50),
+        data: RawJson.encode(data),
+        snapshotText: 'snap:$data',
+        rev: a.rev!,
+      );
+      final mine = pageOf([sameRev('mine'), b, c]);
+      final now = pageOf([sameRev('theirs'), b, c]);
+      final r = fix(base, mine, mine, now);
+      expect(identical(r, now), isFalse);
+      final x = boxOf(r, 'a');
+      expect(x.data!.decode(), 'theirs');
+      expect(x.conflicts.single.node!.text, mine.node('a')!.toRaw().text);
+    });
+
     test('an edit of another box, or of the box already conflicted, changes nothing', () {
       final other = pageOf([a1, edit(b, 'x'), c]);
       expect(identical(fix(base, mineA, mineA, other), other), isTrue);

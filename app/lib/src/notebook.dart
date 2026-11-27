@@ -11539,7 +11539,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // version, and no box of mine holds the recorded one (Place both, a
       // merged result or Keep theirs carry it forward, so it stays required:
       // after a revert it may be recorded again, but it is never lost).
-      final kept = b.rev != null && n.rev != null ? n.rev == b.rev : _sameBoxContent(n, b);
+      final kept = sameBoxVersion(n, b);
       if (!kept) continue;
       settled[n.id] = [
         for (final k in b.conflicts)
@@ -11573,22 +11573,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
   }
 
-  // Whether [b] holds the version recorded in [k] (the same rev, or the same
-  // content): the user kept it, in that box.
+  // Whether [b] holds the version recorded in [k] (sameBoxVersion): the user kept it, in that box.
   static bool _recordIsVersion(BoxConflict k, BoxRecord b) {
     final node = k.node;
     if (node == null || !node.isObject) return false;
     try {
       final x = BoxRecord.tryRead(RawObject.parse(node.text), node);
       if (x == null) return false;
-      return (x.rev != null && x.rev == b.rev) || _sameBoxContent(x, b);
+      return sameBoxVersion(x, b);
     } on FormatException {
       return false;
     }
   }
-
-  static bool _sameBoxContent(BoxRecord x, BoxRecord y) =>
-      x.typeId == y.typeId && x.data == y.data && x.snapshotText == y.snapshotText;
 
   // The copy's node [n] as a consumed copy's re-check requires it, without
   // what the user settled since the merge (0120): null when [n] is itself a

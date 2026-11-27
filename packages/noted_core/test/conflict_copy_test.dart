@@ -646,4 +646,93 @@ void main() {
       expect(consumedCopyHeld(pageOf([]), copy, topOfChain: false), isNotNull);
     });
   });
+
+  // A revision match is the same version only with the same content.
+  group('same rev, other content', () {
+    BoxRecord sameRev(BoxRecord b, String data) => BoxRecord.create(
+      id: b.id,
+      typeId: b.typeId,
+      dataVersion: b.dataVersion,
+      bounds: b.bounds,
+      data: RawJson.encode(data),
+      snapshotText: 'snap:$data',
+      rev: b.rev!,
+    );
+
+    test('consumedCopyHeld, same id: other data is older, same data or other bounds hold', () {
+      final copy = pageOf([a]);
+      expect(consumedCopyHeld(pageOf([sameRev(a, 'changed')]), copy, topOfChain: false), contains('older'));
+      expect(consumedCopyHeld(pageOf([sameRev(a, 'one')]), copy, topOfChain: false), isNull);
+      expect(
+        consumedCopyHeld(pageOf([a.withBounds(const Bounds(9, 9, 100, 50))]), copy, topOfChain: false),
+        isNull,
+      );
+    });
+
+    test('consumedCopyHeld, re-id\'d copy box: the box with its content is claimed', () {
+      final copy = pageOf([b]);
+      final wrong = sameRev(b, 'other').withId('n1');
+      final right = b.withId('n2');
+      expect(consumedCopyHeld(pageOf([wrong, right]), copy, topOfChain: false), isNull);
+      expect(consumedCopyHeld(pageOf([wrong]), copy, topOfChain: false), contains('older'));
+      expect(consumedCopyHeld(pageOf([wrong, sameRev(b, 'else').withId('n2')]), copy, topOfChain: false),
+          isNotNull);
+    });
+
+    test('merge records the copy\'s form; verify and consumedCopyHeld pass', () {
+      final original = pageOf([sameRev(a, 'mine')]);
+      final copy = pageOf([sameRev(a, 'theirs')]);
+      final m = merge(original, copy);
+      expect(m.conflictedIds, {'a'});
+      final x = m.page.node('a')! as BoxRecord;
+      expect(dataOf(x), 'mine');
+      expect(x.conflicts.single.node, copy.node('a')!.toRaw());
+      final disk = readPage(writePage(m.page));
+      expect(verifyMerge(disk, original, copy), isNull);
+      expect(consumedCopyHeld(disk, copy, topOfChain: false), isNull);
+      // Verify rejects the original put back without the record.
+      expect(verifyMerge(original, original, copy), isNotNull);
+    });
+
+    test('same rev and same content records nothing', () {
+      final original = pageOf([a]);
+      final copy = pageOf([a.withBounds(const Bounds(3, 3, 100, 50))]);
+      final m = merge(original, copy);
+      expect(m.conflictedIds, isEmpty);
+      expect((m.page.node('a')! as BoxRecord).conflicts, isEmpty);
+    });
+
+    test('re-id after a foreign-id collision: a box changed under its rev is added again', () {
+      const f = '{"id":"x","type":"text","x":0,"y":0,"width":5,"height":5,"text":"A"}';
+      final x = sameRev(box('x', 'v'), 'copy');
+      final original = pageOf([raw(f, 'x')]);
+      final copy = pageOf([x]);
+      final first = merge(original, copy).page;
+      final reidd = first.nodes.whereType<BoxRecord>().single;
+      expect(reidd.id, isNot('x'));
+      // The same copy again adds nothing.
+      expect(merge(first, copy).page.nodes, hasLength(2));
+      // The kept box was changed under its rev: the copy's box is added again.
+      final changed = first.replaceNode(sameRev(reidd, 'changed'));
+      final again = merge(changed, copy).page;
+      expect(again.nodes, hasLength(3));
+      final disk = readPage(writePage(again));
+      expect(consumedCopyHeld(disk, copy, topOfChain: false), isNull);
+    });
+
+    test('an unsupported type is compared byte for byte', () {
+      BoxRecord u(String data) => BoxRecord.create(
+        id: 'u',
+        typeId: 'x.unregistered',
+        dataVersion: 1,
+        bounds: const Bounds(0, 0, 10, 10),
+        data: RawJson.trusted(data),
+        snapshotText: 's',
+        rev: 'r-u',
+      );
+      expect(sameBoxVersion(u('{"k":1}'), u('{"k":2}')), isFalse);
+      expect(sameBoxVersion(u('{"k":1}'), u('{"k": 1}')), isFalse);
+      expect(sameBoxVersion(u('{"k":1}'), u('{"k":1}')), isTrue);
+    });
+  });
 }

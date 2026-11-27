@@ -172,8 +172,8 @@ RawJson _recordedForm(CanvasNode c, bool forRecovery) =>
   var r = o;
   var isConflict = false;
   final bothRev = o.rev != null && c.rev != null;
-  if (bothRev && o.rev == c.rev) {
-    // Same content.
+  if (bothRev && sameBoxVersion(o, c)) {
+    // The same version: the same revision and the same content.
   } else if (c.baseRev != null && c.baseRev == o.rev) {
     r = c; // the copy is newer
   } else if (o.baseRev != null && o.baseRev == c.rev) {
@@ -242,7 +242,7 @@ Set<CanvasNode> _heldCopyNodes(NotedPage original, NotedPage copy) {
       if (claimed.contains(i)) continue;
       final n = nodes[i];
       final same = switch (c) {
-        BoxRecord() => n is BoxRecord && (c.rev != null ? n.rev == c.rev : _sameContent(n, c)),
+        BoxRecord() => n is BoxRecord && sameBoxVersion(n, c),
         ForeignNode() => _sameModuloId(n, c),
       };
       if (!same) continue;
@@ -352,15 +352,21 @@ String? verifyConflictCopyMerge(
       boxes.add(c);
     }
   }
-  // Matched by revision first, so a content match can't take a node a later
-  // revision match needs.
+  // A copy-only box is claimed by the same version (revision and content;
+  // content alone without a revision), or by a disk box that records it. Boxes
+  // with a revision go first, so a content match can't take a node a later
+  // revision match needs, and the records last.
+  final lacking = <BoxRecord>[];
   for (final byRev in [true, false]) {
     for (final c in boxes) {
       if ((c.rev != null) != byRev) continue;
-      if (!take((d) => d is BoxRecord && (byRev ? d.rev == c.rev : _sameContent(d, c))) &&
-          !held.contains(c)) {
-        return 'box ${c.id} is missing';
-      }
+      if (!take((d) => d is BoxRecord && sameBoxVersion(d, c))) lacking.add(c);
+    }
+  }
+  for (final c in lacking) {
+    if (!take((d) => d is BoxRecord && d.conflicts.any((k) => k.node == _recordedForm(c, forRecovery))) &&
+        !held.contains(c)) {
+      return 'box ${c.id} is missing';
     }
   }
   for (final o in original.nodes) {
@@ -370,7 +376,7 @@ String? verifyConflictCopyMerge(
     final d = onDisk.node(o.id);
     if (d is! BoxRecord) return 'box ${o.id} is no longer a box';
     // A box on disk without a rev can only be matched by its content.
-    bool isVersion(BoxRecord x) => x.rev != null && d.rev != null ? d.rev == x.rev : _sameContent(d, x);
+    bool isVersion(BoxRecord x) => sameBoxVersion(d, x);
     bool covered(BoxRecord x) =>
         isVersion(x) ||
         d.conflicts.any((k) => k.node == _recordedForm(x, forRecovery)) ||
@@ -422,7 +428,7 @@ String? consumedCopyHeld(
   }
 
   String? holds(BoxRecord c, BoxRecord d) {
-    final same = c.rev != null && d.rev != null ? d.rev == c.rev : _sameContent(d, c);
+    final same = sameBoxVersion(d, c);
     final derived = c.rev != null && d.baseRev == c.rev;
     final recorded = d.conflicts.any((k) => k.node == _recordedForm(c, false) || k.node == _recordedForm(c, true));
     if (!same && !derived && !recorded) return 'box ${c.id} holds an older version';
@@ -447,16 +453,31 @@ String? consumedCopyHeld(
     final why = holds(c, disk[i] as BoxRecord);
     if (why != null) return why;
   }
-  // A box that took a new id: by revision first, so a content match can't take
-  // a node a later revision match needs.
-  for (final byRev in [true, false]) {
+  // A box that took a new id: by the same version first (revision and content),
+  // then by revision alone (an edited or recording box, which holds() checks),
+  // then, without a revision, by content; so a looser match can't take a node a
+  // stricter one needs.
+  final claimedAt = <BoxRecord, int>{};
+  for (final pass in [0, 1, 2]) {
     for (final c in unmatched) {
-      if ((c.rev != null) != byRev) continue;
-      final i = claim((d) => d is BoxRecord && (byRev ? d.rev == c.rev : _sameContent(d, c)));
-      if (i == null) return 'box ${c.id} is missing';
-      final why = holds(c, disk[i] as BoxRecord);
-      if (why != null) return why;
+      if (claimedAt.containsKey(c) || (pass == 2) != (c.rev == null)) continue;
+      final i = claim(
+        (d) =>
+            d is BoxRecord &&
+            switch (pass) {
+              0 => sameBoxVersion(d, c),
+              1 => d.rev == c.rev,
+              _ => _sameContent(d, c),
+            },
+      );
+      if (i != null) claimedAt[c] = i;
     }
+  }
+  for (final c in unmatched) {
+    final i = claimedAt[c];
+    if (i == null) return 'box ${c.id} is missing';
+    final why = holds(c, disk[i] as BoxRecord);
+    if (why != null) return why;
   }
   for (final c in copy.nodes) {
     if (c is! ForeignNode || touched.contains(c.id)) continue;
@@ -480,9 +501,11 @@ bool _pairedAt(CanvasNode o, Map<String, CanvasNode> copyById) {
 // A landed page that was overwritten right after landing (0130, 0124).
 
 /// Whether [a] and [b] are the same version of a box: both revs present and
-/// equal, or a rev missing on either side and the same content.
-bool _sameVersion(BoxRecord a, BoxRecord b) =>
-    a.rev != null && b.rev != null ? a.rev == b.rev : _sameContent(a, b);
+/// equal and the content equal too (another editor may change a box and keep
+/// its `rev`), or a rev missing on either side and the same content. A merge
+/// helper, not part of the Box API.
+bool sameBoxVersion(BoxRecord a, BoxRecord b) =>
+    a.rev != null && b.rev != null ? a.rev == b.rev && _sameContent(a, b) : _sameContent(a, b);
 
 /// Whether [x] was edited from [m]'s version.
 bool _derivedFrom(BoxRecord x, BoxRecord m) => x.rev != null && m.rev != null && x.baseRev == m.rev;
@@ -493,7 +516,7 @@ bool _nodeIsVersion(RawJson node, BoxRecord m) {
   if (!node.isObject) return false;
   try {
     final b = BoxRecord.tryRead(RawObject.parse(node.text), node);
-    return b != null && _sameVersion(b, m);
+    return b != null && sameBoxVersion(b, m);
   } on FormatException {
     return false;
   }
@@ -538,7 +561,7 @@ Map<String, CanvasNode> _reidentified(NotedPage mine, NotedPage landed) {
       if (claimed.contains(k.id)) continue;
       final at = landed.node(k.id);
       final same = switch (m) {
-        BoxRecord() => k is BoxRecord && _sameVersion(k, m) && !(at is BoxRecord && _sameVersion(at, k)),
+        BoxRecord() => k is BoxRecord && sameBoxVersion(k, m) && !(at is BoxRecord && sameBoxVersion(at, k)),
         ForeignNode() => k is ForeignNode && _sameModuloId(k, m) && at?.toRaw() != k.toRaw(),
       };
       if (!same) continue;
@@ -631,8 +654,8 @@ List<BoxConflict> _heldRecords(CanvasNode? b) => b is BoxRecord ? b.conflicts : 
             }
           }
           final add = <BoxConflict>[];
-          final contentChanged = b is! BoxRecord || mn is! BoxRecord || !_sameVersion(b, mn);
-          if (contentChanged && !_sameVersion(xx, m) && !_derivedFrom(xx, m)) {
+          final contentChanged = b is! BoxRecord || mn is! BoxRecord || !sameBoxVersion(b, mn);
+          if (contentChanged && !sameBoxVersion(xx, m) && !_derivedFrom(xx, m)) {
             final node = m.withoutConflicts().toRaw();
             if (!xx.conflicts.any((c) => c.node == node)) {
               add.add(BoxConflict.other(node: node, at: at, device: m.device));
@@ -790,7 +813,7 @@ NotedPage settledInFile(NotedPage base, NotedPage mine, NotedPage theirs) {
         if (!had.any((k) => c.deleted ? k.deleted : k.node == c.node)) c,
     ];
     if (learned.isEmpty) continue;
-    final match = _sameVersion(t, m) || learned.any((c) => !c.deleted && _nodeIsVersion(c.node!, m));
+    final match = sameBoxVersion(t, m) || learned.any((c) => !c.deleted && _nodeIsVersion(c.node!, m));
     if (!match) continue;
     var r = _withRecords(t, _missingRecords(t, m));
     final bb = b is BoxRecord ? b : null;

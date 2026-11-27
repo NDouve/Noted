@@ -17,6 +17,8 @@ Versions are listed newest first.
 
 Host-only (not the Box API), run 2026-11-26-01, t1-walk (codex R-1): `FolderWalk` gets the additive named member `unreadable` (default empty), the folders whose listing failed; each is also in `notDownloaded`, so every guard refuses (a failed listing is never empty). `debugListDir` is a hidden test seam. No module-facing change, no version bump.
 
+Host-only (not the Box API), run 2026-11-26-01, task 3 (a revision match is the same version only with the same content): `sameBoxVersion(a, b)` is exported from the merge library (`conflict_copy.dart`); equal `rev` counts only with equal content (`typeId`, `dataVersion`, `data` text, `snapshotText`), and a box without a `rev` is matched on content alone. A merge helper, no module-facing change, no version bump.
+
 Host-only (not the Box API), run 2026-11-25-01, task 6: the canvas command `canvas.exportBox` and `PageCanvas.onExportBox` (the command exists only while the handler is set), `PageCanvasState.captureExportTarget` and `ExportTarget`, and the raster helpers `exportRasterSize`, `decodeWithinCap`, `decodeToRgba`, `imageToPng` and `isPngBytes` (the caps: 4,096 px a side, 16 MP; 100 MP refused). In noted_core, `noteToMarkdown(export: true)`, `noteToHtml`, `exportLinkTarget` and `markdownLinkTarget`.
 
 ## 0.17 — 2026-11-26
