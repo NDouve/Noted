@@ -135,11 +135,6 @@ class RecoveryListing {
 }
 
 // A parsed entry file.
-// An old file that held other bytes than the ones converted, so it was kept.
-class _Replaced extends FormatException {
-  const _Replaced(super.message);
-}
-
 class _Env {
   _Env(this.folder, this.id, this.time, this.timeOk, this.base, this.text, this.key, this.rawKey);
   final String folder;
@@ -712,7 +707,7 @@ class RecoveryStore {
   //
   // Each file goes only while it still holds the bytes that were read and
   // converted (0124, 0131); one that was replaced meanwhile is kept and
-  // reported as a lone file on every start. When the first file was replaced,
+  // reported as a lone file on every start. When the first file was replaced or its delete failed,
   // the second is still removed against the bytes that were read: left in
   // place, it would be paired with the replacement on the next start, and the
   // time rule (a strictly later entry stands for the pair) would then remove
@@ -727,13 +722,17 @@ class RecoveryStore {
     List<int> bytesOf(String p) => p.endsWith('.json') ? metaBytes : pageBytes;
     try {
       await _deleteChecked(first, bytesOf(first));
-    } on _Replaced {
+    } on Object catch (e) {
+      if (e is RecoveryTimeout) rethrow;
+      // Whatever went wrong, the first file may hold a replacement.
+      var message = e is FormatException ? e.message : 'it could not be removed ($e)';
       try {
         await _deleteChecked(second, bytesOf(second));
-      } on Object {
-        // The replacement of the first is what gets reported.
+      } on Object catch (e2) {
+        if (e2 is RecoveryTimeout) rethrow;
+        message += '; the other file: ${e2 is FormatException ? e2.message : e2}';
       }
-      rethrow;
+      throw FormatException(message);
     }
     await hook?.call('legacy-first-deleted');
     await _deleteChecked(second, bytesOf(second));
@@ -754,7 +753,7 @@ class RecoveryStore {
     }
     if (r.deleted || r.outcome == DeleteOutcome.absent) return;
     final kept = [if (r.keptPath != null) r.keptPath!, ...r.alsoKept].where((k) => k != path);
-    throw _Replaced(
+    throw FormatException(
       'it changed while it was being converted, so it is kept'
       '${kept.isEmpty ? '' : ' as ${kept.join(', ')}'}',
     );

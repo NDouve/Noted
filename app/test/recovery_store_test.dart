@@ -326,6 +326,46 @@ void main() {
       }
     });
 
+    test('an old metadata file replaced with the same content and a space is removed without a report', () async {
+      legacy(r'D:\Notes', _page('p1', 'old'));
+      final meta = File('${dir.path}/${stem()}.json').readAsStringSync();
+      final first = await store(hook: replaceOnce('envelope-published', '.json', '$meta ')).list();
+      expect(first.problems, isEmpty);
+      final l = await store().list();
+      expect(l.problems, isEmpty);
+      expect(l.entries, hasLength(1));
+      expect(files('.json'), isEmpty);
+      expect(files('.canvas'), isEmpty);
+    });
+
+    test('an old file whose checked delete fails after a replacement appeared is kept, its partner is removed', () async {
+      legacy(r'D:\Notes', _page('p1', 'old'));
+      final other = jsonEncode({
+        'format': 1,
+        'folder': r'D:\Notes',
+        'pageId': 'p1',
+        'time': later.toIso8601String(),
+        'base': writePage(_page('p1', 'b')),
+      });
+      var done = false;
+      final first = await store(
+        hook: (p) async {
+          if (p != 'legacy-compare' || done) return;
+          done = true;
+          File('${dir.path}/${stem()}.json').writeAsStringSync(other);
+          throw const FileSystemException('injected');
+        },
+      ).list();
+      for (var i = 0; i < 2; i++) {
+        final l = i == 0 ? first : await store().list();
+        expect(l.problems, isNotEmpty);
+        expect(files('.canvas'), isEmpty);
+        expect(files('.json').any((f) => File(f).readAsStringSync() == other), isTrue);
+        // A set-aside copy that couldn't be put back waits for the next start's sweep.
+        if (i == 1) expect(dir.listSync().where((f) => f.path.contains('.cas-')), isEmpty);
+      }
+    });
+
     test('an old page file replaced once while a later entry stands is kept and reported, never paired again', () async {
       await store().write(folder: r'D:\Notes', page: _page('p1', 'existing'), baseText: null, time: later);
       legacy(r'D:\Notes', _page('p1', 'old'), time: t); // superseded by the later entry
