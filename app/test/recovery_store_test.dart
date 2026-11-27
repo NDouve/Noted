@@ -294,32 +294,50 @@ void main() {
       expect(files('.entry'), hasLength(1));
     });
 
-    test('an old metadata file replaced after it was converted keeps both files; the next start finishes', () async {
+    // Replaces the file once, the first time the point is reached.
+    Future<void> Function(String) replaceOnce(String point, String ext, String content) {
+      var done = false;
+      return (p) async {
+        if (p != point || done) return;
+        done = true;
+        File('${dir.path}/${stem()}$ext').writeAsStringSync(content);
+      };
+    }
+
+    test('an old metadata file replaced after it was converted is kept and reported, never paired again', () async {
       legacy(r'D:\Notes', _page('p1', 'old'));
-      final meta = File('${dir.path}/${stem()}.json').readAsStringSync();
-      final first = await store(hook: replaceAt('envelope-published', '.json', '$meta ')).list();
+      final other = jsonEncode({
+        'format': 1,
+        'folder': r'D:\Notes',
+        'pageId': 'p1',
+        'time': later.toIso8601String(),
+        'base': writePage(_page('p1', 'b')),
+      });
+      final first = await store(hook: replaceOnce('envelope-published', '.json', other)).list();
       expect(first.problems, hasLength(1));
-      expect(files('.json'), hasLength(1));
-      expect(files('.entry'), hasLength(1));
-      // The page went on the second pass (it equals what the entry holds); the
-      // metadata stays, and is removed on the next start.
-      final l = await store().list();
-      expect(l.problems, isEmpty);
-      expect(l.entries, hasLength(1));
-      expect(files('.entry'), hasLength(1));
-      expect(files('.json'), isEmpty);
-      expect(files('.canvas'), isEmpty);
+      for (var i = 0; i < 2; i++) {
+        final l = i == 0 ? first : await store().list();
+        expect(l.problems, hasLength(1));
+        expect(l.entries, hasLength(1));
+        expect(files('.entry'), hasLength(1));
+        expect(files('.canvas'), isEmpty); // the converted page went, the entry holds it
+        expect(File(files('.json').single).readAsStringSync(), other);
+        if (i == 1) expect(l.entries.single.page.meta.title, 'old');
+      }
     });
 
-    test('an old page file replaced while the entry stands from a later one is kept first', () async {
+    test('an old page file replaced once while a later entry stands is kept and reported, never paired again', () async {
       await store().write(folder: r'D:\Notes', page: _page('p1', 'existing'), baseText: null, time: later);
       legacy(r'D:\Notes', _page('p1', 'old'), time: t); // superseded by the later entry
       final b = writePage(_page('p1', 'replacement'));
-      final l = await store(hook: replaceAt('envelope-published', '.canvas', b)).list();
-      expect(l.problems, hasLength(1));
-      expect(File(files('.canvas').single).readAsStringSync(), startsWith(b));
-      expect(files('.json'), hasLength(1)); // the canvas went first, was refused, so the json stays
-      expect(l.entries.map((e) => e.page.meta.title), contains('existing'));
+      final first = await store(hook: replaceOnce('envelope-published', '.canvas', b)).list();
+      for (var i = 0; i < 3; i++) {
+        final l = i == 0 ? first : await store().list();
+        expect(l.problems, hasLength(1));
+        expect(File(files('.canvas').single).readAsStringSync(), b);
+        expect(files('.json'), isEmpty); // the metadata went, so the replacement is never paired with it
+        expect(l.entries.map((e) => e.page.meta.title), ['existing']);
+      }
     });
 
     test('a lone old page file replaced before it is removed is kept and reported', () async {

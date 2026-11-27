@@ -135,6 +135,11 @@ class RecoveryListing {
 }
 
 // A parsed entry file.
+// An old file that held other bytes than the ones converted, so it was kept.
+class _Replaced extends FormatException {
+  const _Replaced(super.message);
+}
+
 class _Env {
   _Env(this.folder, this.id, this.time, this.timeOk, this.base, this.text, this.key, this.rawKey);
   final String folder;
@@ -707,15 +712,29 @@ class RecoveryStore {
   //
   // Each file goes only while it still holds the bytes that were read and
   // converted (0124, 0131); one that was replaced meanwhile is kept and
-  // reported. If the first file is refused, the second stays too, so the pair
-  // is migrated again on the next start. If the second is refused after the
-  // first went, it stays as a lone file and is reported on every start.
+  // reported as a lone file on every start. When the first file was replaced,
+  // the second is still removed against the bytes that were read: left in
+  // place, it would be paired with the replacement on the next start, and the
+  // time rule (a strictly later entry stands for the pair) would then remove
+  // the replacement against its own fresh bytes.
+  //
+  // Known gap: a file replaced before the first read can't be told apart from
+  // the original pair, so the time rule treats the pair as superseded.
   Future<void> _removeLegacy(String base, List<int> metaBytes, List<int> pageBytes, {required bool pageFirst}) async {
     final (first, second) = pageFirst
         ? ('$base.canvas', '$base.json')
         : ('$base.json', '$base.canvas');
     List<int> bytesOf(String p) => p.endsWith('.json') ? metaBytes : pageBytes;
-    await _deleteChecked(first, bytesOf(first));
+    try {
+      await _deleteChecked(first, bytesOf(first));
+    } on _Replaced {
+      try {
+        await _deleteChecked(second, bytesOf(second));
+      } on Object {
+        // The replacement of the first is what gets reported.
+      }
+      rethrow;
+    }
     await hook?.call('legacy-first-deleted');
     await _deleteChecked(second, bytesOf(second));
   }
@@ -735,7 +754,7 @@ class RecoveryStore {
     }
     if (r.deleted || r.outcome == DeleteOutcome.absent) return;
     final kept = [if (r.keptPath != null) r.keptPath!, ...r.alsoKept].where((k) => k != path);
-    throw FormatException(
+    throw _Replaced(
       'it changed while it was being converted, so it is kept'
       '${kept.isEmpty ? '' : ' as ${kept.join(', ')}'}',
     );
