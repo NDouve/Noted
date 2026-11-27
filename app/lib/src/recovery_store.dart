@@ -168,7 +168,11 @@ class RecoveryStore {
   /// migration, so tests can inject a failure there (`tmp-written`: a new
   /// generation is complete but not yet published; `envelope-published`: an
   /// old entry is converted but its old files are still there;
-  /// `legacy-first-deleted`: the first of the old files is removed; `verify`:
+  /// `legacy-first-deleted`: the first of the old files is removed;
+  /// `legacy-final-check`: just before the last comparison of a set-aside old
+  /// file; `legacy-compare`: an old file equals what was read and is set aside, not
+  /// yet deleted; `legacy-half-read`: a lone old file was read and an entry holds it, but
+  /// it is not yet removed; `verify`:
   /// before an entry is read back).
   RecoveryStore(this.directory, {this.windows, this.hook});
 
@@ -703,8 +707,9 @@ class RecoveryStore {
   //
   // Each file goes only while it still holds the bytes that were read and
   // converted (0124, 0131); one that was replaced meanwhile is kept and
-  // reported, and the other file then stays too, so that the pair is migrated
-  // again on the next start and the replacement becomes an entry of its own.
+  // reported. If the first file is refused, the second stays too, so the pair
+  // is migrated again on the next start. If the second is refused after the
+  // first went, it stays as a lone file and is reported on every start.
   Future<void> _removeLegacy(String base, List<int> metaBytes, List<int> pageBytes, {required bool pageFirst}) async {
     final (first, second) = pageFirst
         ? ('$base.canvas', '$base.json')
@@ -716,14 +721,23 @@ class RecoveryStore {
   }
 
   // Deletes [path] only while it holds [bytes]; otherwise it is kept and a
-  // FormatException tells why, so the caller reports it.
-  static Future<void> _deleteChecked(String path, List<int> bytes) async {
-    final r = await deleteFileIfMatches(path, bytes: bytes);
+  // FormatException tells why, so the caller reports it with the path. The
+  // primitive sets a file aside while it compares; a leftover under that name
+  // is put back by the sweep at the start of [_listNow].
+  Future<void> _deleteChecked(String path, List<int> bytes) async {
+    final DeleteResult r;
+    try {
+      r = await deleteFileIfMatches(path, bytes: bytes, beforeDelete: () async => await hook?.call('legacy-compare'), beforeFinalCheck: (_) async => await hook?.call('legacy-final-check'));
+    } on KeptFileSystemException catch (e) {
+      throw FormatException('it could not be removed and is kept as ${e.keptPaths.join(', ')}');
+    } on StorageBusy {
+      throw const FormatException('the folder was busy, so it is kept');
+    }
     if (r.deleted || r.outcome == DeleteOutcome.absent) return;
-    final kept = r.keptPath;
+    final kept = [if (r.keptPath != null) r.keptPath!, ...r.alsoKept].where((k) => k != path);
     throw FormatException(
       'it changed while it was being converted, so it is kept'
-      '${kept == null || kept == path ? '' : ' as $kept'}',
+      '${kept.isEmpty ? '' : ' as ${kept.join(', ')}'}',
     );
   }
 
@@ -974,6 +988,9 @@ class RecoveryStore {
     // A crashed delete-if-unchanged left an entry under a set-aside name: put
     // it back first, so nothing below sees the entry as missing.
     await sweepAsideFiles(directory, extension: '.entry');
+    // The same for an old-layout file a checked delete was comparing.
+    await sweepAsideFiles(directory, extension: '.canvas');
+    await sweepAsideFiles(directory, extension: '.json');
     await _migrate([], [], tx);
     await _settleTmps(problems, damaged, tx);
     await _migrate(problems, damaged, tx);

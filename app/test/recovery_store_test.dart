@@ -223,6 +223,105 @@ void main() {
       }
     });
 
+    String stem() => _legacyName(r'D:\Notes', 'p1');
+
+    test('an old file left under a set-aside name by a crash is put back and migrated', () async {
+      legacy(r'D:\Notes', _page('p1', 'old'));
+      File('${dir.path}/${stem()}.canvas').renameSync('${dir.path}/${stem()}.canvas.1-2-3.cas-old');
+      final l = await store().list();
+      expect(l.problems, isEmpty);
+      expect(l.entries, hasLength(1));
+      expect(dir.listSync().where((f) => f.path.contains('.cas-old')), isEmpty);
+      expect(files('.canvas'), isEmpty);
+      expect(files('.json'), isEmpty);
+    });
+
+    test('an old file left under a set-aside name beside a newer one is kept and reported', () async {
+      legacy(r'D:\Notes', _page('p1', 'replacement'));
+      final a = writePage(_page('p1', 'old'));
+      File('${dir.path}/${stem()}.canvas.1-2-3.cas-old').writeAsStringSync(a);
+      final l = await store().list();
+      expect(l.problems, hasLength(1));
+      expect(dir.listSync().where((f) => f.path.contains('.cas-old')), isEmpty);
+      final left = files('.canvas');
+      expect(left, hasLength(1));
+      expect(left.single, contains('-recovered-'));
+      expect(File(left.single).readAsStringSync(), a);
+    });
+
+    test('a file that appears while the compared one is set aside survives', () async {
+      legacy(r'D:\Notes', _page('p1', 'old'));
+      final b = writePage(_page('p1', 'replacement'));
+      var n = 0;
+      final l = await store(
+        hook: (p) async {
+          if (p == 'legacy-compare' && ++n == 2) File('${dir.path}/${stem()}.canvas').writeAsStringSync(b);
+        },
+      ).list();
+      expect(l.problems, isNotEmpty); // the lone replacement is reported
+      expect(files('.canvas'), hasLength(1));
+      expect(File(files('.canvas').single).readAsStringSync(), startsWith(b));
+      expect(dir.listSync().where((f) => f.path.contains('.cas-')), isEmpty);
+    });
+
+    test('an old file that changes under the final check is kept under another name and reported', () async {
+      legacy(r'D:\Notes', _page('p1', 'old'));
+      final c = File('${dir.path}/${stem()}.json');
+      final original = c.readAsStringSync();
+      var calls = 0;
+      final l = await store(
+        hook: (p) async {
+          if (p != 'legacy-final-check') return;
+          calls++;
+          for (final f in dir.listSync()) {
+            if (f is File && f.path.contains('.json.') && f.path.contains('.cas-')) f.writeAsStringSync('$original${' ' * calls}');
+          }
+        },
+      ).list();
+      expect(calls, greaterThan(0));
+      expect(l.problems, isNotEmpty);
+      final kept = [for (final f in files('.json')) File(f).readAsStringSync()];
+      expect(kept.any((s) => s.startsWith(original) && s.length > original.length), isTrue);
+      expect(dir.listSync().where((f) => f.path.contains('.cas-')), isEmpty);
+    });
+
+    test('a failure of the checked delete keeps both old files and is reported', () async {
+      legacy(r'D:\Notes', _page('p1', 'old'));
+      final l = await store(hook: _failAt('legacy-compare')).list();
+      expect(l.problems, hasLength(1));
+      expect(files('.canvas'), hasLength(1));
+      expect(files('.json'), hasLength(1));
+      expect(files('.entry'), hasLength(1));
+    });
+
+    test('an old metadata file replaced after it was converted keeps both files; the next start finishes', () async {
+      legacy(r'D:\Notes', _page('p1', 'old'));
+      final meta = File('${dir.path}/${stem()}.json').readAsStringSync();
+      final first = await store(hook: replaceAt('envelope-published', '.json', '$meta ')).list();
+      expect(first.problems, hasLength(1));
+      expect(files('.json'), hasLength(1));
+      expect(files('.entry'), hasLength(1));
+      // The page went on the second pass (it equals what the entry holds); the
+      // metadata stays, and is removed on the next start.
+      final l = await store().list();
+      expect(l.problems, isEmpty);
+      expect(l.entries, hasLength(1));
+      expect(files('.entry'), hasLength(1));
+      expect(files('.json'), isEmpty);
+      expect(files('.canvas'), isEmpty);
+    });
+
+    test('an old page file replaced while the entry stands from a later one is kept first', () async {
+      await store().write(folder: r'D:\Notes', page: _page('p1', 'existing'), baseText: null, time: later);
+      legacy(r'D:\Notes', _page('p1', 'old'), time: t); // superseded by the later entry
+      final b = writePage(_page('p1', 'replacement'));
+      final l = await store(hook: replaceAt('envelope-published', '.canvas', b)).list();
+      expect(l.problems, hasLength(1));
+      expect(File(files('.canvas').single).readAsStringSync(), startsWith(b));
+      expect(files('.json'), hasLength(1)); // the canvas went first, was refused, so the json stays
+      expect(l.entries.map((e) => e.page.meta.title), contains('existing'));
+    });
+
     test('a lone old page file replaced before it is removed is kept and reported', () async {
       legacy(r'D:\Notes', _page('p1', 'old'));
       await store().list();
