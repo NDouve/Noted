@@ -543,4 +543,36 @@ void main() {
       expect(dir.listSync().length, 1);
     });
   });
+
+  group('publishAtIfUnchanged', () {
+    test('replaces the file at its path only if unchanged, and never changes pathFor', () async {
+      final page = NotedPage.create(PageMeta.create(id: 'p1', title: 'One', order: 0));
+      final sep = Platform.pathSeparator;
+      final copy = File('${dir.path}${sep}p1-NOTED-MCP-0123456789abcdef.canvas')..writeAsStringSync(writePage(page));
+      final original = File('${dir.path}${sep}p1.canvas')..writeAsStringSync(writePage(page));
+      final store = PageStore(dir)..adopt('p1', copy.path);
+      final renamed = page.withMeta(page.meta.withTitle('Merged'));
+      FileStamp? stamp;
+      final r = await store.publishAtIfUnchanged(original.path, renamed, writePage(page), onPublishStamp: (s) => stamp = s);
+      expect(r.replaced, isTrue);
+      expect(original.readAsStringSync(), writePage(renamed));
+      expect(stamp, isNotNull);
+      expect(store.pathFor('p1'), copy.path, reason: 'the store still reads and writes the copy');
+      expect(copy.readAsStringSync(), writePage(page));
+      // A file that changed since it was read is not replaced.
+      final again = await store.publishAtIfUnchanged(original.path, page, writePage(page));
+      expect(again.replaced, isFalse);
+      expect(original.readAsStringSync(), writePage(renamed));
+      expect(store.pathFor('p1'), copy.path);
+      expect(dir.listSync().where((f) => f.path.endsWith('.tmp')), isEmpty);
+    });
+
+    test('saveIfUnchanged still points the store at the file it wrote', () async {
+      final page = NotedPage.create(PageMeta.create(id: 'p1', title: 'One', order: 0));
+      final store = PageStore(dir);
+      final r = await store.saveIfUnchanged(page, null);
+      expect(r.replaced, isTrue);
+      expect(store.pathFor('p1'), '${dir.path}${Platform.pathSeparator}p1.canvas');
+    });
+  });
 }

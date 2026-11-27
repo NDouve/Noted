@@ -1048,7 +1048,9 @@ void main() {
       seams.beforePublish = null;
       // The binder file is set aside right now.
       expect(binderFile().existsSync(), isFalse);
-      check = nb.checkBinderFile(binderFile().path);
+      // Started from the update's chain job, which doesn't await it: outside
+      // the job (G1).
+      check = Zone.root.run(() => nb.checkBinderFile(binderFile().path));
     };
     await nb.setBinderAiAccess(section.path, AiAccess.open);
     await check;

@@ -1,7 +1,8 @@
 # Manual run of the iCloud reload-equivalence test on the Windows runner: a
 # range of seeds, then one seed repeated. Each step stops at its first failing
 # seed and prints the failure (the lost marker, the last write to its file and
-# the Dart stack of the app's write). Uploads nothing.
+# the Dart stack of the app's write). With `load`, each step runs beside two
+# other heavy test files in one -j 6 invocation. Uploads nothing.
 name: Reload seeds
 
 on:
@@ -18,6 +19,10 @@ on:
         description: 'How many times to repeat it (0: skip)'
         type: number
         default: 200
+      load:
+        description: 'Under load: each step also runs test/notebook_test.dart and test/reload_equivalence_test.dart, in the same -j 6 invocation'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -52,7 +57,13 @@ jobs:
         timeout-minutes: 40
         env:
           NOTED_RELOAD_SEEDS: ${{ inputs.seeds }}
-        run: flutter test test/icloud_reload_equivalence_test.dart --name "seed [0-9]+$" --reporter expanded
+          NOTED_RELOAD_ONLY_SEEDS: ${{ inputs.load && '1' || '' }}
+        run: |
+          if [ "${{ inputs.load }}" = "true" ]; then
+            flutter test -j 6 test/icloud_reload_equivalence_test.dart test/notebook_test.dart test/reload_equivalence_test.dart --reporter expanded
+          else
+            flutter test test/icloud_reload_equivalence_test.dart --name "seed [0-9]+$" --reporter expanded
+          fi
 
       - name: One seed, repeated
         if: ${{ !cancelled() && inputs.repeat_count != '0' }}
@@ -62,4 +73,10 @@ jobs:
         env:
           NOTED_RELOAD_REPEAT_SEED: ${{ inputs.repeat_seed }}
           NOTED_RELOAD_REPEAT_COUNT: ${{ inputs.repeat_count }}
-        run: flutter test test/icloud_reload_equivalence_test.dart --name "seed ${NOTED_RELOAD_REPEAT_SEED}, run [0-9]+ of" --reporter expanded
+          NOTED_RELOAD_ONLY_SEEDS: ${{ inputs.load && '1' || '' }}
+        run: |
+          if [ "${{ inputs.load }}" = "true" ]; then
+            flutter test -j 6 test/icloud_reload_equivalence_test.dart test/notebook_test.dart test/reload_equivalence_test.dart --reporter expanded
+          else
+            flutter test test/icloud_reload_equivalence_test.dart --name "seed ${NOTED_RELOAD_REPEAT_SEED}, run [0-9]+ of" --reporter expanded
+          fi

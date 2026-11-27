@@ -1098,6 +1098,16 @@ class _Sim {
         await appTemplate();
       case 'daemonForeignAssets':
         daemonForeignAssets();
+      case 'appOwnCopy':
+        await appOwnCopy();
+      case 'daemonOwnOriginal':
+        await daemonOwnOriginal();
+      case 'appOpenOwn':
+        await appOpenOwn();
+      case 'appEditOwn':
+        await appEditOwn();
+      case 'appTickOwn':
+        await appTickOwn();
     }
     await pause();
   }
@@ -1898,6 +1908,91 @@ class _Sim {
     evictExcuse.clear();
     await nb.recheckConsumedCopiesForTest();
     await nb.discoveryIdle;
+  }
+
+  // -- t8: the open page shown from its own conflict-copy-named file ------------------
+
+  String? ownCopyId; // the page shown from its copy-named file
+  String? ownCopyA; // the marker only the original holds
+  String get _ownCopyPath => '$drivePath/$ownCopyId-NOTED-MCP-0123456789abcdef.canvas';
+
+  bool _onScreen(String marker) => nb.current!.page.nodes.any((n) => n is BoxRecord && n.snapshotText == marker);
+
+  /// A new page with an app edit is renamed to a conflict copy's name while the
+  /// app is closed (its original was away at the launch): the app lists the
+  /// page from that file ([appOpenOwn] opens it there).
+  Future<void> appOwnCopy() async {
+    await nb.flush();
+    final id = await nb.createPage();
+    pageIds.add(id);
+    final m = marker();
+    nb.current!.insertBox(box(m));
+    await nb.flush();
+    claim(m, 'an app edit of $id');
+    ownCopyId = id;
+    await quit();
+    retrySync(() => File('$drivePath/$id.canvas').renameSync(_ownCopyPath));
+    await launch();
+  }
+
+  /// The page renamed by [appOwnCopy] is opened (a step of its own: what follows
+  /// a launch runs in the new life).
+  Future<void> appOpenOwn() async {
+    final id = ownCopyId;
+    if (id == null) return;
+    await nb.open(id);
+    if (_norm(nb.pageFileForTest(id) ?? '') != _norm(_ownCopyPath)) {
+      throw StateError('seed $seed: page $id is not shown from its copy-named file: ${nb.pageFileForTest(id)}');
+    }
+  }
+
+  /// The original comes back with box A, which only it holds. Told or not, as
+  /// the daemon draws: untold, the next save's own check meets it first.
+  Future<void> daemonOwnOriginal() async {
+    final id = ownCopyId;
+    if (id == null) return;
+    final text = readText(File(_ownCopyPath));
+    if (text == null) throw StateError('seed $seed: the copy-named file of $id is not there');
+    final m = marker();
+    final original = '$drivePath/$id.canvas';
+    evictedText[original] = writePage(readPage(text).insertNode(box(m)));
+    await daemonMaterialize(path: original);
+    claim(m, 'a box only the original of $id holds');
+    ownCopyA = m;
+  }
+
+  /// Edit E on the page shown from its copy, and its save, which lands within
+  /// its time (inside its own job it meets the original and merges nothing).
+  Future<void> appEditOwn() async {
+    final id = ownCopyId;
+    if (id == null || nb.currentId != id) throw StateError('seed $seed: the page shown from its copy is not open');
+    final m = marker();
+    nb.current!.insertBox(box(m));
+    await nb.flush().timeout(
+      const Duration(seconds: 20),
+      onTimeout: () => throw StateError('seed $seed: the save of $id shown from its copy did not finish'),
+    );
+    claim(m, 'an app edit of $id shown from its copy');
+    if (!_onScreen(m)) throw StateError('seed $seed: edit E is not on screen');
+  }
+
+  /// The folder tick merges the original into the page: from then on it is
+  /// in `<id>.canvas`, with A and E on screen.
+  Future<void> appTickOwn() async {
+    final id = ownCopyId;
+    final a = ownCopyA;
+    if (id == null || a == null) return;
+    await nb.folderTickForTest().timeout(
+      const Duration(seconds: 20),
+      onTimeout: () => throw StateError('seed $seed: the folder tick did not finish'),
+    );
+    await nb.discoveryIdle;
+    final problems = <String>[
+      if (_norm(nb.pageFileForTest(id) ?? '') != _norm('$drivePath/$id.canvas')) 'page $id is at ${nb.pageFileForTest(id)}',
+      if (nb.currentId != id) '$id is not open',
+      if (nb.currentId == id && !_onScreen(a)) 'box A is not on screen',
+    ];
+    if (problems.isNotEmpty) throw StateError('seed $seed: the original was not merged: ${problems.join(', ')}');
   }
 
   Future<void> daemonMaterialize({String? path, bool told = false}) async {
@@ -2817,11 +2912,14 @@ void main() {
   final seeds =
       envSeeds ??
       (repeating ? const <int>[] : [for (var i = 1; i <= _fixedSeeds + _extraSeeds; i++) i]);
+  // `NOTED_RELOAD_ONLY_SEEDS=1` (the workflow's load run, which runs this file
+  // beside others with no name filter): only the seeds asked for run.
+  final onlySeeds = Platform.environment['NOTED_RELOAD_ONLY_SEEDS'] == '1';
 
-  _windowsFolderTests();
+  if (!onlySeeds) _windowsFolderTests();
 
   // t2a: pinned scenarios of the attachments that are not downloaded.
-  group('attachments that are not downloaded (t2a)', () {
+  group('attachments that are not downloaded (t2a)', skip: onlySeeds, () {
     for (final kind in _t2aKillKinds) {
       for (final seed in const [3, 8]) {
         test('a kill at $kind (seed $seed)', () async {
@@ -2917,6 +3015,7 @@ void main() {
         );
       }
     }
+    if (onlySeeds) return;
 
     // The snapshot lists a folder and copies file by file, while the app's
     // renames run on IO threads: one that lands after the listing leaves the
@@ -3190,6 +3289,25 @@ void main() {
           timeout: const Timeout(Duration(minutes: 4)),
         );
       }
+    }
+
+    // t8: the open page is shown from its copy-named file, and its original
+    // comes back with box A only it holds. The save of edit E meets the
+    // original inside its own job, which merges nothing and lands; the folder
+    // tick then merges the original from outside the job. Every step ends in
+    // its time, and live and reload agree on A and E, with the page in
+    // `<id>.canvas`. Without the fix the save waits on itself (the seed 27
+    // hang), or the page merges with its own file and A never arrives.
+    for (final seed in seeds.isEmpty ? const <int>[] : const [27, 3, 12]) {
+      test(
+        'seed $seed, the open page shown from its own conflict-copy file (t8)',
+        () => _sequence(
+          seed,
+          setUp: (s) => s.killKind = 'none', // no kill in this scenario
+          plan: const ['appEdit', 'appOwnCopy', 'appOpenOwn', 'daemonOwnOriginal', 'appEditOwn', 'appTickOwn', 'appCheck'],
+        ),
+        timeout: const Timeout(Duration(minutes: 4)),
+      );
     }
 
     test('every kill point was reached by some seed', () {

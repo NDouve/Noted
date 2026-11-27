@@ -259,8 +259,9 @@ void main() {
       var settingsWrittenInside = false;
       nb.syncHook = (point, path) async {
         if (point != 'open-read') return;
-        // A write queued now must wait until the open job is over.
-        queued = nb.addStandaloneFolder(w.other.path);
+        // A write queued now must wait until the open job is over. Started
+        // as the user does, outside the open's chain job (G1).
+        queued = Zone.root.run(() => nb.addStandaloneFolder(w.other.path));
         await Future<void>.delayed(const Duration(milliseconds: 200));
         settingsWrittenInside = w.settings.existsSync();
       };

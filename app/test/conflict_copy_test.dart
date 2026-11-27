@@ -461,8 +461,9 @@ void main() {
         if (point != 'original-read') return;
         if (++calls == 1) {
           // Inside the first merge's chain job: a timer that starts the next
-          // check after the job has ended.
-          Timer(const Duration(milliseconds: 30), () => second = nb.checkFile(path2));
+          // check after the job has ended. The check job that ran the merge
+          // doesn't await it (G3).
+          Timer(const Duration(milliseconds: 30), () => second = nb.checkFile(path2, nested: true));
           return;
         }
         paused.complete();

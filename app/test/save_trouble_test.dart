@@ -6,6 +6,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:noted/main.dart' show buildModules;
 import 'package:noted/src/notebook.dart' show Notebook;
 import 'package:noted/src/recovery_store.dart';
 import 'package:noted/src/save_trouble.dart';
@@ -137,6 +138,121 @@ void main() {
       await hung;
       await behind;
       expect(ended.expand((s) => s).toSet(), {'a', 'c'});
+    });
+  });
+
+  group('the queue guards (t8)', () {
+    // Each test trips a guard on purpose: the trip it recorded is taken here,
+    // so the run's own check (flutter_test_config.dart) sees none.
+    Matcher tripped(String guard) => contains(startsWith(guard));
+    List<String> takeTrips() {
+      final t = [...guardTripsForTest];
+      guardTripsForTest.clear();
+      return t;
+    }
+
+    test('G1: a job that waits for the chain to be idle asserts', () async {
+      final c = SaveChain();
+      Object? error;
+      await c.run(() async {
+        try {
+          await c.idle;
+        } on AssertionError catch (e) {
+          error = e;
+        }
+      }).timeout(const Duration(seconds: 5));
+      expect(error, isA<AssertionError>());
+      expect(takeTrips(), tripped('G1'));
+    });
+
+    test('G2: a job that queues another job asserts, unless nested', () async {
+      final c = SaveChain();
+      Object? error;
+      Future<void>? nested;
+      await c.run(() async {
+        try {
+          unawaited(c.run(() async {}));
+        } on AssertionError catch (e) {
+          error = e;
+        }
+        nested = c.run(() async {}, nested: true); // not awaited by the job
+      });
+      await nested;
+      expect(error, isA<AssertionError>());
+      final trips = takeTrips();
+      expect(trips, hasLength(1));
+      expect(trips, tripped('G2'));
+    });
+
+    test('spawnOutside does not assert: a job may start work that waits for the chain', () async {
+      final c = SaveChain();
+      late Future<void> waited;
+      var insideThere = true;
+      await c.run(() async {
+        waited = c.spawnOutside(() {
+          insideThere = c.insideJob;
+          return c.idle.then((_) => c.run(() async {}));
+        });
+      });
+      await waited.timeout(const Duration(seconds: 5));
+      expect(insideThere, isFalse);
+      expect(guardTripsForTest, isEmpty);
+    });
+
+    group('in a notebook', () {
+      late Directory dir;
+      late Notebook nb;
+      final sep = Platform.pathSeparator;
+
+      setUp(() async {
+        dir = await Directory.systemTemp.createTemp('noted_guards');
+        nb = Notebook(PageStore(dir), buildModules(), saveDelay: const Duration(hours: 1), recoveryDirectory: Directory('${dir.path}${sep}rec'));
+        await nb.load();
+      });
+      tearDown(() async {
+        nb.dispose();
+        await deleteTestFolder(dir);
+      });
+
+      test('G3: a check-queue job that queues a check asserts, unless nested', () async {
+        final path = '${dir.path}$sep${nb.currentId}.canvas';
+        Object? error;
+        Future<void>? nested;
+        nb.syncHook = (point, _) async {
+          if (point != 'check-start' || nested != null) return;
+          try {
+            unawaited(nb.checkFile(path));
+          } on AssertionError catch (e) {
+            error = e;
+          }
+          nested = nb.checkFile(path, nested: true);
+        };
+        await nb.checkFile(path).timeout(const Duration(seconds: 5));
+        nb.syncHook = null;
+        await nested!.timeout(const Duration(seconds: 5));
+        expect(error, isA<AssertionError>());
+        expect(takeTrips(), tripped('G3'));
+      });
+
+      test('the backstop: a copy of the open page checked inside a chain job returns, is listed as passing, and merges at the next tick', () async {
+        final id = nb.currentId!;
+        final codec = nb.modules.codecs.codecFor('noted.note')!;
+        final added = commitBox(createBox(codec, const Bounds(400, 10, 200, 40)), codec, codec.decode(const {
+          'document': {'type': 'page', 'children': <Object>[]},
+        }, 1));
+        await nb.flush();
+        final original = readPage(File('${dir.path}$sep$id.canvas').readAsStringSync());
+        final copy = '${dir.path}$sep$id-DESKTOP-4QK2N8L.canvas';
+        File(copy).writeAsStringSync(writePage(original.insertNode(added)));
+        await nb.checkFileInChainForTest(copy).timeout(const Duration(seconds: 5));
+        final listed = nb.unreadable.where((u) => u.path == copy).single;
+        expect(listed.reason, startsWith('Could not be merged'));
+        expect(nb.current!.page.node(added.id), isNull);
+        await nb.folderTickForTest().timeout(const Duration(seconds: 5));
+        expect(File(copy).existsSync(), isFalse);
+        expect(nb.current!.page.node(added.id), isNotNull);
+        expect(nb.unreadable, isEmpty);
+      });
     });
   });
 

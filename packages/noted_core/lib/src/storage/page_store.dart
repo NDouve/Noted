@@ -424,6 +424,49 @@ class PageStore {
     void Function(FileStamp?)? onPublishStamp,
   }) async {
     final path = _pathFor(page.id);
+    final result = await _replaceAt(
+      path,
+      page,
+      expectedText,
+      beforeMoveAside: beforeMoveAside,
+      afterRead: afterRead,
+      beforePublish: beforePublish,
+      beforeRestore: beforeRestore,
+      beforeAsideDelete: beforeAsideDelete,
+      beforeFinalCheck: beforeFinalCheck,
+      afterFinalRead: afterFinalRead,
+      onPublishStamp: onPublishStamp,
+    );
+    if (result.replaced) _paths[page.id] = path;
+    return result;
+  }
+
+  /// As [saveIfUnchanged], but writes [page] at [path], a file of this folder
+  /// that may not be the one the store reads and writes for the page, and
+  /// never changes which file that is ([pathFor] stays as it was).
+  Future<ReplaceResult> publishAtIfUnchanged(
+    String path,
+    NotedPage page,
+    String expectedText, {
+    void Function(FileStamp?)? onPublishStamp,
+  }) {
+    assert(_pathKey(File(path).parent.path) == _pathKey(directory.path), 'publishAtIfUnchanged: $path is not in ${directory.path}');
+    return _replaceAt(path, page, expectedText, onPublishStamp: onPublishStamp);
+  }
+
+  Future<ReplaceResult> _replaceAt(
+    String path,
+    NotedPage page,
+    String? expectedText, {
+    void Function()? beforeMoveAside,
+    void Function()? afterRead,
+    void Function()? beforePublish,
+    void Function()? beforeRestore,
+    Future<void> Function(String path)? beforeAsideDelete,
+    Future<void> Function(String path)? beforeFinalCheck,
+    Future<void> Function(String path)? afterFinalRead,
+    void Function(FileStamp?)? onPublishStamp,
+  }) async {
     final tmp = File('$path.${DateTime.now().microsecondsSinceEpoch}-${_tmpCounter++}.tmp');
     FileStamp? stamp;
     try {
@@ -448,10 +491,7 @@ class PageStore {
         beforeFinalCheck: beforeFinalCheck,
         afterFinalRead: afterFinalRead,
       );
-      if (result.replaced) {
-        _paths[page.id] = path;
-        onPublishStamp?.call(stamp);
-      }
+      if (result.replaced) onPublishStamp?.call(stamp);
       return result;
     } finally {
       if (await tmp.exists()) await tmp.delete();

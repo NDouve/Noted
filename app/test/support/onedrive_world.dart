@@ -197,10 +197,10 @@ class SpyNotebook extends Notebook {
   }
 
   @override
-  Future<void> checkFolders() async {
+  Future<void> checkFolders({bool nested = false}) async {
     log.add('checkFolders');
     if (failing.contains('checkFolders')) throw StateError('checkFolders');
-    if (passThrough) await super.checkFolders();
+    if (passThrough) await super.checkFolders(nested: nested);
   }
 
   @override

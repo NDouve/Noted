@@ -602,7 +602,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0053 — Cloud conflict-copy files (OneDrive)
 - **Date:** 2026-10-25
-- **Status:** Active; extended by 0120 (landed boxes); deletion of a copy amended by 0124 and 0183; verification amended by 0132; other providers amended by 0163; conflict-copy names amended by 0171; the merged header's AI access amended by 0183; "same `rev`: the same version" amended by 0199 (also the same content)
+- **Status:** Active; extended by 0120 (landed boxes); deletion of a copy amended by 0124 and 0183; verification amended by 0132; other providers amended by 0163; conflict-copy names amended by 0171; the merged header's AI access amended by 0183; "same `rev`: the same version" amended by 0199 (also the same content); the header of an open page's own-copy merge amended by 0200
 - **Decision:**
   - **Detection:** a file `<stem>-<suffix>.canvas` is a conflict copy when `<stem>.canvas` exists in the same folder and both have the same page id. OneDrive appends `-<COMPUTERNAME>`, then `-<COMPUTERNAME>-<n>`. This naming is *unverified*, so a broader suffix pattern is accepted. *(Amended by 0171: the recognised suffixes now also include Drive for desktop ` (n)`, Nextcloud ` (conflicted copy …)`, older ownCloud `_conflict-…` and Finder-style ` n`, and every combination of suffixes is tried, shortest stem first. A chosen file (0137, 0149) is never a copy and is preferred as the original.)*
   - **Merge**, box by box into the original. There is no common base, so revisions decide:
@@ -2589,7 +2589,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0183 — A consumed conflict copy is retired only after a re-check; a merge keeps the stricter AI access
 - **Date:** 2026-11-16
-- **Status:** Active (the build team: the AI-access rule by the maintainer's PM chat, 2026-11-16; the retirement by the PM, run 2026-11-16-01, from the reviewed note `2026-11-16-01-copy-retire`); amends 0053, 0124 and 0171; unparking a parked retirement amended by 0187; "by rev" amended by 0199 (the rev and the same content)
+- **Status:** Active (the build team: the AI-access rule by the maintainer's PM chat, 2026-11-16; the retirement by the PM, run 2026-11-16-01, from the reviewed note `2026-11-16-01-copy-retire`); amends 0053, 0124 and 0171; unparking a parked retirement amended by 0187; "by rev" amended by 0199 (the rev and the same content); the retirement mark of an own-copy merge amended by 0200
 - **Decision:**
   - **Retiring a merged copy.** After a conflict copy is merged and verified, the copy is kept as a recovery entry (fresh slot, no base, read back) before it is deleted through the checked delete. The entry is retired only when a later read of the page, under the folder lock, still holds every box of the copy (by rev, a box edited from it, or a recorded conflict version, with the copy's recorded conflicts and landed marker) and AI access at least as strict as the copy's, or as the user's own choice since the merge. Boxes this app deleted, conflicts the user resolved by keeping their own version, and landed markers they dismissed, since the merge are left out. Otherwise the merge is redone from the entry, three rounds, then listed, with one more round after the next change to the file. The re-check waits while the page is open, while a delete can still be undone, and until the copy's own delete has returned; "listed nowhere" is a read of the page's path, not the in-memory listing. A notebook without a recovery folder never retires a copy.
   - **AI access in a merge.** When a conflict copy or a same-id file is merged into its original, the merged header keeps the original's fields except AI access, which is the stricter of the two: Guarded over Privileged over Open; an absent field ranks lowest below the top of the chain and as Guarded at the top; unknown values read as Guarded; a tie keeps the original's value.
@@ -2725,7 +2725,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0194 — Reading a stored file that may not be downloaded; iCloud version temps; new iCloud versions; conflict-copy retries
 - **Date:** 2026-11-26
-- **Status:** Active (the build team (PM), run 2026-11-25-01, from the reviewed notes `2026-11-25-01-t3a-evicted-reads`, `2026-11-25-01-t3c-resolve-keep` and `2026-11-24-01-t2b-icloud-new-versions`); amends 0190
+- **Status:** Active (the build team (PM), run 2026-11-25-01, from the reviewed notes `2026-11-25-01-t3a-evicted-reads`, `2026-11-25-01-t3c-resolve-keep` and `2026-11-24-01-t2b-icloud-new-versions`); amends 0190; an open page's own conflict-copy file amended by 0200
 - **Decision:**
   - **One guarded read (amends 0190's "never read").** The app and the core read a page, binder, template, recovery or attachment file only through `readStored` / `openStoredRead` / `openStoredFile` (`noted_core/lib/src/storage/stored_read.dart`). Each checks first, with metadata only, that the file is downloaded. The answer is the bytes, *not downloaded* (the file's download is asked for, and nothing is read), *missing* (no file and no stub), or a failure. No separate `exists` or `type` check decides that a file is gone. A test (`stored_reads_test.dart`) scans every raw file read in the app and packages and fails on one that isn't routed or allow-listed with a reason. The MCP server keeps its own check (0190) and isn't routed.
   - **What the user sees:** an open page whose file is no longer downloaded becomes read-only, "This page is read-only while its file downloads. Your edits are kept in recovery."; a conflict copy whose page is not downloaded is listed "A copy; its page is still downloading" and merged once it is.
@@ -2797,6 +2797,25 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - **Known limit:** resolving such a conflict keeps rev R on both sides, so a later copy between the same two versions can raise it again.
 - **Rationale:** another JSON Canvas editor that duplicates a box, or a sync client putting back an older file, keeps a box's revision with other content. Matching on revision alone could retire the only copy of a kept version.
 - **Alternatives considered:** leaving it (rare, but a silent loss); comparing whole raw nodes (geometry would stop copies retiring after a move).
+
+## 0200 — An open page saved to its own conflict-copy file: no merge inside a save, the original merged from outside
+- **Date:** 2026-11-26
+- **Status:** Active (the build team (PM), run 2026-11-26-01, from the reviewed note `2026-11-26-01-t8-rev4`); amends 0053, 0183 and 0194
+- **Decision:**
+  - **The case.** The open page's file is a conflict copy, for example `<id>-NOTED-MCP-x.canvas`, and its original `<id>.canvas` comes back.
+  - **Inside a save.** The save's own check of its file does nothing: no merge, nothing listed or scheduled, and the save's expected bytes are unchanged. The save keeps writing the copy.
+  - **From outside a save.** The merge runs from a check that is not part of the save chain: the copy's watcher event, the original's check, or the folder check. On iOS that is the iCloud change and the folder check. On Android it is a pull's file changes or the next launch; OneDrive places there are pull-only and never merge copies.
+    - The screen, unsaved edits included, is merged with the original. The screen is the original side, so on an equal revision its header, box order and geometry win (amends 0053's "the page header is the original's"); AI access is still the stricter of the two.
+    - The result is written at the original's path through publish-if-unchanged, read back, and its page id checked against the open page. Only then does the page save to the original.
+    - The copy is kept in recovery and deleted only if unchanged. Its retirement mark (0183) also holds the screen's own edits since the last save, such as deleted boxes and settled conflicts, so a box deleted before the merge stays deleted.
+    - A not-downloaded original is asked for and the merge waits.
+  - **A refused own-file merge is not listed** (amends 0194's "the copy stays listed"): listing the page's own file would stop its saves. The page keeps saving to the copy. The original is listed as a duplicate once its own check runs.
+  - **No job waits on itself.** No save-chain job waits for the chain's idle or `flush()`, or queues and awaits a chain job; no check job queues a check. Debug and test builds assert this where the wait or the queueing starts. **Known limit:** a job that awaits a future started elsewhere isn't seen.
+- **Rationale:** the save of such a page awaited `flush()` on itself and stopped every later save of the page for the session. A merge from outside the save, which writes only checked bytes and closes nothing, can't lose the screen's edits.
+- **Alternatives considered:**
+  - closing the page, merging it closed and reopening it (could discard the only copy of unsaved edits);
+  - deferring the merge to a job queued from the save (it waited on itself again);
+  - leaving the case to the next launch.
 
 ---
 
