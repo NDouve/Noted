@@ -5,7 +5,9 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter_test/flutter_test.dart';
 import 'package:noted/src/device_storage.dart';
+import 'package:noted/src/save_trouble.dart' show guardTripsForTest;
 
 import 'support/io_trace.dart';
 import 'support/test_watchdog.dart';
@@ -23,5 +25,13 @@ Future<void> testExecutable(FutureOr<void> Function() testMain) async {
   // Fails a test blocked in a synchronous wait, which the timeout can't (see
   // test_watchdog.dart).
   await startTestWatchdog();
+  // A guard that code never waits on a queue it runs on (G1–G3) fails the
+  // test it tripped in, also when the assert's error was caught on the way.
+  tearDown(() {
+    if (guardTripsForTest.isEmpty) return;
+    final trips = [...guardTripsForTest];
+    guardTripsForTest.clear();
+    fail('A queue guard tripped:\n${trips.join('\n\n')}');
+  });
   await testMain();
 }

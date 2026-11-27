@@ -43,6 +43,18 @@ String describeError(Object e) {
 
 // The save chain (L1) ----------------------------------------------------------
 
+/// The guards that code never waits on a queue it runs on (G1–G3) that
+/// failed in this isolate, each with its stack: an assert's error can be
+/// caught on the way, so a test also looks here. Filled in debug and test
+/// builds only.
+final List<String> guardTripsForTest = [];
+
+/// For an assert: [ok], recording [what] in [guardTripsForTest] when false.
+bool guardHolds(bool ok, String what) {
+  if (!ok) guardTripsForTest.add('$what\n${StackTrace.current}');
+  return ok;
+}
+
 class _Job {
   _Job(this.pages);
   final Set<String> pages;
@@ -72,7 +84,11 @@ class SaveChain {
 
   /// Runs [job] after the jobs queued so far and before any later one. [pages]
   /// are the pages it works on, for [detach].
-  Future<T> run<T>(Future<T> Function() job, {Set<String> pages = const {}}) {
+  ///
+  /// G2: never from inside a job, which would wait on itself if it awaited
+  /// the result (asserted), unless [nested]: the caller doesn't await it.
+  Future<T> run<T>(Future<T> Function() job, {Set<String> pages = const {}, bool nested = false}) {
+    assert(guardHolds(nested || !insideJob, 'G2: a save-chain job queued another job on the chain'));
     final root = _root;
     final j = _Job(pages);
     root.live.add(j);
@@ -97,9 +113,18 @@ class SaveChain {
   /// itself; such code runs inline instead.
   bool get insideJob => (Zone.current[this] as _InJob?)?.active ?? false;
 
+  /// Runs [fn] outside every job of this chain, and outside the zone marks
+  /// [alsoClear] names: for work a job starts and doesn't await (a timer, an
+  /// unawaited check). The caller reads [insideJob] first if it needs it.
+  T spawnOutside<T>(T Function() fn, {Iterable<Object> alsoClear = const []}) =>
+      runZoned(fn, zoneValues: {this: null, for (final k in alsoClear) k: null});
+
   /// Completes when everything queued so far has finished, or when the chain
   /// is detached.
+  ///
+  /// G1: never awaited inside a job, which includes itself (asserted).
   Future<void> get idle {
+    assert(guardHolds(!insideJob, 'G1: a save-chain job waits for the chain to be idle'));
     final r = _root;
     return Future.any([r.tail, r.detachedSignal.future]);
   }
