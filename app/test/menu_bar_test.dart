@@ -103,7 +103,9 @@ void main() {
       'app.binder.newInFolder',
       'app.binder.open',
       'app.binder.newFromTemplate',
+      'app.binder.openZip',
       'canvas.exportBox',
+      'app.binder.saveZip',
       'sub:Page',
     ]);
     expect(_layout(t), [
@@ -114,17 +116,24 @@ void main() {
       'app.binder.newInFolder',
       'app.binder.open',
       'app.binder.newFromTemplate',
+      'app.binder.openZip',
       '|',
       'canvas.exportBox',
+      'app.binder.saveZip',
       '|',
       'sub:Page',
     ]);
+    expect(
+      t.widget<MenuItemButton>(find.byKey(const ValueKey('menu-app.binder.saveZip'))).onPressed,
+      isNull,
+      reason: 'Save binder as .zip… is off for a standalone page',
+    );
     expect(find.text('New page'), findsOneWidget, reason: 'File has one New page');
     expect(_shortcut(t, 'app.page.new'), 'Ctrl+N');
     // Page's submenu, in the order of the page commands.
     await t.tap(find.byKey(const ValueKey('menu-sub-Page')));
     await t.pumpAndSettle();
-    expect(_shown(t).skip(8), [
+    expect(_shown(t).skip(10), [
       'app.page.newSubpage',
       'app.page.newSubpageFromTemplate',
       'app.page.saveAsTemplate',
@@ -150,6 +159,10 @@ void main() {
     await t.tap(find.byKey(const ValueKey('menu-sub-Binder')));
     await t.pumpAndSettle();
     final ids = _shown(t);
+    final saveZip = t.widget<MenuItemButton>(find.byKey(const ValueKey('menu-app.binder.saveZip')));
+    expect(saveZip.onPressed, isNotNull, reason: 'Save binder as .zip… is on for a binder page');
+    expect(find.text('Save binder as .zip…'), findsOneWidget);
+    expect(find.text('Open binder from .zip…'), findsOneWidget);
     expect(ids.skipWhile((s) => s != 'app.binder.cover'), [
       'app.binder.cover',
       'app.binder.settings',

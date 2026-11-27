@@ -171,6 +171,80 @@ class ExportWriter {
     }
   }
 
+  /// [write] for a file that is already made: streams [source], whose content
+  /// identity is [identity], to [target] by the same publish, replace and
+  /// exclusive-create rules, never holding it whole (a binder `.zip`).
+  Future<ExportWriteResult> writeFile(String target, String source, ContentIdentity identity) async {
+    final name = exportBaseName(target);
+    final folder = _folderOf(target);
+    try {
+      await housekeeping(target);
+      return await _writeFile(target, name, folder, source, identity);
+    } on StorageBusy catch (e) {
+      return ExportWriteResult(ExportWriteKind.failed, _busyMessage(name, e));
+    } on ExclusiveWriteFailed catch (e) {
+      return ExportWriteResult(
+        ExportWriteKind.failed,
+        e.left ? e.message : 'Could not write $name. Nothing was exported.',
+      );
+    } on FileSystemException catch (e) {
+      return ExportWriteResult(ExportWriteKind.failed, _failureMessage(name, e));
+    } on Object {
+      return ExportWriteResult(ExportWriteKind.failed, 'Could not write $name. Nothing was exported.');
+    }
+  }
+
+  Future<ExportWriteResult> _writeFile(
+    String target,
+    String name,
+    String folder,
+    String source,
+    ContentIdentity identity,
+  ) async {
+    final links = await (hardLinks ?? (f) => _probe(f, name))(folder);
+    if (!links) {
+      const noReplace = ExportWriteResult(
+        ExportWriteKind.failed,
+        "Choose a new name; Noted can't safely replace a file here.",
+      );
+      if (_taken(target)) return noReplace;
+      final r = await createExclusiveFromFile(target, source, open: opener, sandboxed: sandboxed);
+      return r == ExclusiveOutcome.taken ? noReplace : _exported(name);
+    }
+    final tmp = File('$folder${Platform.pathSeparator}${exportTempName(name)}');
+    _temps.add(tmp.path);
+    var published = false;
+    try {
+      await _copyTo(source, tmp);
+      published = await publish(tmp, target);
+      if (published) return _exported(name);
+      // The replace reads only the temp and the target.
+      return await _replaceTaken(tmp, target, name, Uint8List(0), onPublished: () => published = true);
+    } finally {
+      _temps.remove(tmp.path);
+      if (!published) {
+        try {
+          await deleteFileIfMatches(tmp.path, identity: identity);
+        } on Object {
+          // The temp stays; a later export into this folder removes it.
+        }
+      }
+    }
+  }
+
+  // Streams [source] into the new staging temp [tmp], flushed.
+  static Future<void> _copyTo(String source, File tmp) async {
+    final out = await tmp.open(mode: FileMode.writeOnly);
+    try {
+      await for (final chunk in File(source).openRead()) {
+        await out.writeFrom(chunk);
+      }
+      await out.flush();
+    } finally {
+      await out.close();
+    }
+  }
+
   Future<ExportWriteResult> _write(String target, String name, String folder, Uint8List bytes) async {
     final links = await (hardLinks ?? (f) => _probe(f, name))(folder);
     if (!links) {

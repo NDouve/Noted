@@ -9,6 +9,7 @@ import 'package:noted_core/noted_core.dart';
 
 import 'app_commands.dart';
 import 'binder_colors.dart';
+import 'binder_zip/binder_zip_flow.dart';
 import 'icloud_folders.dart' show keepInICloudText;
 import 'notebook.dart';
 import 'settings_panel.dart';
@@ -647,6 +648,7 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
         _item(r, AppCommands.binderSettings),
         const NotedMenuDivider(),
         _item(r, AppCommands.binderSaveAsTemplate),
+        if (r[AppCommands.binderSaveZip] != null) _item(r, AppCommands.binderSaveZip),
         const NotedMenuDivider(),
       ],
       _item(r, AppCommands.binderRemove),
@@ -675,6 +677,12 @@ class PageTreeViewState extends State<PageTreeView> implements PageTreeActions {
 
   @override
   Future<void> binderSaveAsTemplate(BinderSection b) => _guard(() => _saveBinderAsTemplate(b));
+
+  @override
+  Future<void> binderSaveZip(BinderSection b) => runSaveBinderZip(context, _nb, b);
+
+  @override
+  Future<void> openBinderZip() => runOpenBinderZip(context, _nb);
 
   @override
   Future<void> binderRemove(BinderSection b) async {

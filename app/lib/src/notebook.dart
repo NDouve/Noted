@@ -1010,6 +1010,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   void _logHoldError(Object e) => debugPrint('Starting the work of a binder hold failed: $e');
 
   Future<T> _lockRunRaw<T>(Directory folder, Future<T> Function() job) {
+    _assertNoZipJob('a folder job');
     final mark = Zone.current[_userActionKey];
     if (mark is! _UserAction || !mark.active || _disposed) return folderLocks.run(folder, job);
     var counted = false;
@@ -1809,7 +1810,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// (`candidate-read` just before a candidate's binder file is read: throw a
   /// [FileSystemException] to make the read fail; `job` as an add job starts,
   /// `recheck` after its rechecks and before the folder is read; `opened`
-  /// after the folder was scanned and before the binder is listed; `adopted`
+  /// after the folder was scanned and before the binder is listed; `listed`
+  /// after an added binder's list was saved, before its pages are reconciled,
+  /// its copies merged and its recovery replayed; `adopted`
   /// after the binder file of a listed folder was taken over; `root-list` before
   /// a root is listed (throw to make that fail); `claimed`
   /// in a template's creation after its binder file was written; `settings-read`
@@ -7603,6 +7606,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // Runs [body] as one `_checking` job (after the writes in flight), the way
   // the folder checks do. Null if the notebook was disposed first.
   Future<T?> _queued<T>(Future<T> Function() body) {
+    _assertNoZipJob('a queued check');
     final done = Completer<T?>();
     final job = _checking.then((_) async {
       try {
@@ -7667,6 +7671,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       _rebuildTree();
       _syncWatchers();
       await _saveSettings();
+      await _binderSeam('listed', path);
       if (!await _reconcileAdded(path, found: found, expectId: expectId)) {
         return none();
       }
@@ -7773,6 +7778,98 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     } finally {
       // (sweeping stays off for the whole found add: see _listBinder)
     }
+  }
+
+  // Binder .zip (design t6) ----------------------------------------------------
+
+  static const Object _zipJobKey = #notedBinderZipJob;
+
+  // A binder .zip lock job holds one file's copy or one metadata pass: never a
+  // flush, a save chain wait, a queued check or another folder job (t6 §3.4).
+  void _assertNoZipJob(String what) {
+    assert(Zone.current[_zipJobKey] == null, '$what inside a binder .zip lock job');
+  }
+
+  /// The kind of binder .zip lock job running in the current zone (`read` or
+  /// `metadata`), or null outside one.
+  static String? get binderZipJobKind => Zone.current[_zipJobKey] as String?;
+
+  /// Runs [job] in its own gated turn at listed binder folder [path] (t6 §3.3,
+  /// §3.4): a held binder (G2) refuses it with a [NotebookException]. A
+  /// [metadataOnly] job only lists and stamps; a read job copies one of
+  /// Noted's own files. Neither may flush, wait for the save chain or a queued
+  /// check, or start another folder job (asserted).
+  Future<T> binderZipJob<T>(String path, Future<T> Function() job, {required bool metadataOnly}) {
+    _assertNoZipJob('a binder .zip job');
+    if (_sectionAt(path) == null) {
+      return Future.error(const NotebookException('That binder is no longer listed.'));
+    }
+    final kind = metadataOnly ? 'metadata' : 'read';
+    return _lockRun(Directory(path), () => runZoned(job, zoneValues: {_zipJobKey: kind}));
+  }
+
+  /// Whether a page of binder [path] has edits that aren't on disk: a save
+  /// still waiting for the autosave timer, save trouble on the open page (its
+  /// edits held in the editor or recovery), or kept edits in recovery that
+  /// haven't landed. Memory only: no file is read, so a binder .zip check job
+  /// may ask it.
+  bool binderHasUnsavedEdits(String path) {
+    final key = _key(_normalizePath(path));
+    bool inBinder(String? id) {
+      final loc = id == null ? null : _loc[id];
+      return loc != null && loc != _standalone && _key(loc) == key;
+    }
+
+    if (inBinder(_pendingSave?.id)) return true;
+    if (_trouble.kind != TroubleKind.saved && inBinder(_trouble.pageId)) return true;
+    // The binder file's own edits: cover changes not written yet ("Not saved
+    // yet"), and queued settings.
+    final listed = _binders.keys.where((p) => _key(p) == key).firstOrNull;
+    if (listed != null && (coverPendingFor(listed).isNotEmpty || (_binders[listed]?.pending.isNotEmpty ?? false))) {
+      return true;
+    }
+    final rec = _recovery;
+    if (rec != null) {
+      for (final e in rec.indexEntries) {
+        if (_key(e.folder) == key && isKeptEdit(e) && !rec.isLanded(e.gen)) return true;
+      }
+    }
+    return false;
+  }
+
+  /// Takes what the open cover of binder [path] has typed into its pending
+  /// changes, as hiding the cover does, so a share's flush and check see it.
+  void binderZipTakeCoverTyping(String path) {
+    if (_coverTypingPath != null && _key(_coverTypingPath!) == _key(_normalizePath(path))) _takeCoverTyping();
+  }
+
+  /// [_refuseWhileHeld] for the binder .zip commands, before any picker.
+  void binderZipRefuseWhileHeld() => _refuseWhileHeld();
+
+  /// Why binders can't be opened into the folder [parent] (pull-only, or an
+  /// iCloud folder not tested yet: the add path's messages), or null.
+  String? binderZipParentRefusal(String parent) {
+    final p = _normalizePath(parent);
+    if (_pullOnly(p)) return pullOnlyMessageFor(p);
+    if (!_mayTouch(p)) return _untestedMessage(p);
+    return null;
+  }
+
+  /// Whether [path] is the default binder folder itself.
+  bool isDefaultBinderFolder(String path) => _key(_normalizePath(path)) == _key(defaultBinderFolderPath);
+
+  /// The title of the listed binder whose recorded id is [binderId], or null.
+  String? listedBinderTitle(String binderId) {
+    for (final b in _binders.values) {
+      if (_binderIds[_key(b.path)] == binderId || b.binder?.id == binderId) return b.title;
+    }
+    return null;
+  }
+
+  /// Records a bookmark for a folder this device just made (macOS), before
+  /// the binder in it is added, as [createBinder] does.
+  Future<void> binderZipFolderMade(String path) async {
+    await icloud?.bookmarkCreated(path);
   }
 
   // Standalone folders ---------------------------------------------------------
@@ -10358,6 +10455,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   /// Writes any unsaved change now.
   Future<void> flush() async {
+    _assertNoZipJob('flush()');
     _saveTimer?.cancel();
     _saveTimer = null;
     final p = _pendingSave;

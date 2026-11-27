@@ -404,7 +404,28 @@ const String _appTemp = '$_outsideMark: its temp in app-private state, renamed o
 const String _freshTemp =
     '$_tempMark: a unique name made for this call, published or removed by it';
 
+const String _zipLocal =
+    "$_outsideMark: a binder .zip share's own file in its fresh folder in the system temp folder, removed by deleteFileIfMatches";
+const String _zipStaging =
+    "$_tempMark: an open's private staging folder (.NAME.noted-open-RANDOM from createTemp), created exclusively, renamed by moveExclusive or emptied by deleteFileIfMatches";
+
 const List<Site> writeSites = [
+  ('app/lib/src/binder_zip/binder_share.dart', 'File(dst).createSync(exclusive: true);', 1, _zipLocal),
+  ('app/lib/src/binder_zip/binder_share.dart', 'final raf = File(dst).openSync(mode: FileMode.append);', 1, _zipLocal),
+  ('app/lib/src/binder_zip/binder_share.dart', 'File(_zip).createSync(exclusive: true);', 1, _zipLocal),
+  ('app/lib/src/binder_zip/zip_writer.dart', 'final raf = File(zipPath).openSync(mode: FileMode.append);', 2, _zipLocal),
+  ('app/lib/src/binder_zip/zip_writer.dart', 'File(to).createSync(exclusive: true);', 1, _zipLocal),
+  ('app/lib/src/binder_zip/zip_writer.dart', 'final dst = File(to).openSync(mode: FileMode.append);', 1, _zipLocal),
+  ('app/lib/src/binder_zip/zip_writer.dart', "File('\${pause.gate}.reached').writeAsStringSync('');", 1, '$_outsideMark: a test seam, the marker beside a gate file a test made'),
+  ('app/lib/src/binder_zip/zip_extract.dart', 'File(path).createSync(exclusive: true);', 1, _zipStaging),
+  ('app/lib/src/binder_zip/zip_extract.dart', 'final raf = File(path).openSync(mode: FileMode.append);', 1, _zipStaging),
+  ('app/lib/src/binder_zip/zip_extract.dart', 'Directory(p).createSync();', 1, _zipStaging),
+  (
+    'app/lib/src/export/export_write.dart',
+    'final out = await tmp.open(mode: FileMode.writeOnly);',
+    1,
+    "$_tempMark: the export's staging temp streamed from a file (.NAME.noted-export-RANDOM.tmp), published by publishExclusive or removed by deleteFileIfMatches",
+  ),
   ('app/lib/src/ai/ai_access_service.dart', 'raf = mcpLog.openSync(mode: FileMode.append);', 2, '$_outsideMark: the MCP access log in app data'),
   ('app/lib/src/ai/ai_link_server.dart', 'file.parent.createSync(recursive: true);', 1, _appState),
   ('app/lib/src/ai/ai_link_server.dart', 'tmp.writeAsStringSync(', 1, _appTemp),
@@ -627,7 +648,9 @@ List<int> handlersWithoutStorageBusy(String source) {
 /// export code has no raw delete or rename of its own.
 const List<Site> exportSites = [
   ('app/lib/src/export/export_write.dart', 'this.publish = publishExclusive,', 1, 'the export publish: never replaces; the probe uses it too'),
-  ('app/lib/src/export/export_write.dart', 'published = await publish(tmp, target);', 1, 'the export publish of the staging temp'),
+  ('app/lib/src/export/export_write.dart', 'published = await publish(tmp, target);', 2, 'the export publish of the staging temp (bytes, or a file: a binder .zip)'),
+  ('app/lib/src/export/export_write.dart', 'await deleteFileIfMatches(tmp.path, identity: identity);', 1, "the removal of an unpublished temp streamed from a file, against that file's identity"),
+  ('app/lib/src/export/exclusive_create.dart', 'final r = await deleteFileIfMatches(path, identity: head);', 1, "the streamed exclusive create's cleanup: a partial file removed only when it holds the bytes written"),
   ('app/lib/src/export/export_write.dart', 'replaceIfUnchanged(tmp, target, null, identity: identity);', 1, 'the checked replace, against the identity read before the prompt'),
   ('app/lib/src/export/export_write.dart', 'await deleteFileIfMatches(path, bytes: bytes);', 1, "the removal of an unpublished temp (and of the probe's names), against the bytes written"),
   ('app/lib/src/export/export_write.dart', 'linked = await publish(a, linkPath);', 1, "the probe's link"),

@@ -14,7 +14,7 @@ import 'import_limits.dart';
 /// zip bomb stops at the limit. Encrypted, zip64, truncated and inconsistent
 /// archives are refused with an [ImportException].
 final class ZipReader {
-  ZipReader._(this._bytes, this._limits, this._entries);
+  ZipReader._(this._bytes, this._limits, this._entries, this.entries);
 
   /// Reads the central directory of [bytes].
   factory ZipReader(Uint8List bytes, ImportLimits limits) {
@@ -44,9 +44,11 @@ final class ZipReader {
     if (count > limits.entries) throw const ImportException('has too many parts to import');
     if (cdOffset + cdSize > eocd) throw bad;
     final entries = <String, _Entry>{};
+    final listed = <ZipEntryInfo>[];
     var p = cdOffset;
     for (var i = 0; i < count; i++) {
       if (p + 46 > bytes.length || d.getUint32(p, Endian.little) != 0x02014b50) throw bad;
+      final madeBy = d.getUint16(p + 4, Endian.little);
       final flags = d.getUint16(p + 8, Endian.little);
       final method = d.getUint16(p + 10, Endian.little);
       final crc = d.getUint32(p + 16, Endian.little);
@@ -55,15 +57,36 @@ final class ZipReader {
       final nameLen = d.getUint16(p + 28, Endian.little);
       final extraLen = d.getUint16(p + 30, Endian.little);
       final commentLen = d.getUint16(p + 32, Endian.little);
+      final diskStart = d.getUint16(p + 34, Endian.little);
+      final external = d.getUint32(p + 38, Endian.little);
       final local = d.getUint32(p + 42, Endian.little);
       if (p + 46 + nameLen + extraLen + commentLen > bytes.length) throw bad;
-      final name = utf8.decode(Uint8List.sublistView(bytes, p + 46, p + 46 + nameLen), allowMalformed: true);
+      final rawName = Uint8List.sublistView(bytes, p + 46, p + 46 + nameLen);
+      final name = utf8.decode(rawName, allowMalformed: true);
       if (csize == 0xFFFFFFFF || usize == 0xFFFFFFFF || local == 0xFFFFFFFF) throw zip64;
       entries[name] = _Entry(flags, method, csize, usize, local, crc);
+      listed.add(
+        ZipEntryInfo(
+          name: name,
+          rawName: rawName,
+          flags: flags,
+          method: method,
+          compressedSize: csize,
+          size: usize,
+          crc: crc,
+          madeBy: madeBy,
+          externalAttributes: external,
+          diskStart: diskStart,
+        ),
+      );
       p += 46 + nameLen + extraLen + commentLen;
     }
-    return ZipReader._(bytes, limits, entries);
+    return ZipReader._(bytes, limits, entries, List.unmodifiable(listed));
   }
+
+  /// Every central-directory entry, in the archive's order, two with the same
+  /// name included (the name lookup keeps the last).
+  final List<ZipEntryInfo> entries;
 
   final Uint8List _bytes;
   final ImportLimits _limits;
@@ -130,6 +153,73 @@ final class ZipReader {
     if (_crc32(inflated) != e.crc) throw bad;
     return inflated;
   }
+}
+
+/// One central-directory entry as the archive states it (nothing is checked
+/// beyond what [ZipReader]'s constructor checks).
+final class ZipEntryInfo {
+  const ZipEntryInfo({
+    required this.name,
+    required this.rawName,
+    required this.flags,
+    required this.method,
+    required this.compressedSize,
+    required this.size,
+    required this.crc,
+    required this.madeBy,
+    required this.externalAttributes,
+    required this.diskStart,
+  });
+
+  /// The name as UTF-8 (malformed bytes replaced).
+  final String name;
+
+  /// The name's bytes as stored.
+  final Uint8List rawName;
+
+  /// The general-purpose flags (bit 0 encrypted, bit 6 strong encryption,
+  /// bit 11 UTF-8 name).
+  final int flags;
+  final int method;
+  final int compressedSize;
+
+  /// The uncompressed size the entry declares.
+  final int size;
+  final int crc;
+
+  /// "Version made by": the high byte is the host system (3 is Unix).
+  final int madeBy;
+
+  /// The external attributes: the DOS attributes in the low 16 bits, the Unix
+  /// mode in the high 16 when [madeBy]'s host is Unix.
+  final int externalAttributes;
+
+  /// The disk the entry starts on.
+  final int diskStart;
+
+  /// Whether the name is flagged as UTF-8 (bit 11).
+  bool get utf8Name => flags & 0x800 != 0;
+
+  /// Whether the entry is encrypted (bit 0 or bit 6).
+  bool get encrypted => flags & 1 != 0 || flags & 0x40 != 0;
+}
+
+/// The CRC-32 of [data], as zip stores it.
+int zipCrc32(List<int> data) => _crc32(data);
+
+/// A CRC-32 computed over chunks, as zip stores it.
+final class ZipCrc32 {
+  int _c = 0xFFFFFFFF;
+
+  void add(List<int> data) {
+    var c = _c;
+    for (final b in data) {
+      c = _crcTable[(c ^ b) & 0xFF] ^ (c >>> 8);
+    }
+    _c = c;
+  }
+
+  int get value => (_c ^ 0xFFFFFFFF) & 0xFFFFFFFF;
 }
 
 final class _Entry {

@@ -201,6 +201,10 @@ ExportWriter _writerFor(BuildContext context) {
       ));
 }
 
+/// The app run's export writer, its prompts shown in [context]. A binder
+/// `.zip` is published through it too (0197).
+ExportWriter exportWriterFor(BuildContext context) => _writerFor(context);
+
 void Function(String) _noticeTo(BuildContext context, ExportTarget target) => (message) {
   final store = target.store;
   if (store != null) {
