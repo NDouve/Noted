@@ -16,7 +16,8 @@ import 'package:noted/src/notebook.dart';
 import 'package:noted/src/save_trouble.dart';
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
-import 'package:noted_core/src/storage/dataless.dart' show debugMarkDataless, debugUnmarkDataless, debugDatalessPaths;
+import 'package:noted_core/src/storage/dataless.dart'
+    show debugMarkDataless, debugUnmarkDataless, debugDatalessPaths;
 
 import 'support/busy_retry.dart';
 import 'support/notebook_folder.dart';
@@ -56,8 +57,18 @@ class FailingStore extends PageStore {
     Future<void> Function(String path)? afterFinalRead,
     void Function(FileStamp?)? onPublishStamp,
   }) async {
-    if (fail) throw FileSystemException('write failed', pathFor(page.id), const OSError('Access is denied', 5));
-    return super.saveIfUnchanged(page, expectedText, onPublishStamp: onPublishStamp);
+    if (fail) {
+      throw FileSystemException(
+        'write failed',
+        pathFor(page.id),
+        const OSError('Access is denied', 5),
+      );
+    }
+    return super.saveIfUnchanged(
+      page,
+      expectedText,
+      onPublishStamp: onPublishStamp,
+    );
   }
 }
 
@@ -71,7 +82,6 @@ void main() {
   late Notebook nb;
   late PageStore st;
   late BoxRecord baseBox;
-  final extra = <Notebook>[];
 
   String originalPath() => '${dir.path}$sep$id.canvas';
   String copyPath() => '${dir.path}$sep$id-NOTED-MCP-0123456789abcdef.canvas';
@@ -85,16 +95,30 @@ void main() {
 
   Set<String> ids(NotedPage p) => p.nodes.map((n) => n.id).toSet();
 
-  Notebook make(PageStore store, {Duration leaveSaveLimit = const Duration(seconds: 5)}) =>
-      Notebook(store, modules, saveDelay: const Duration(hours: 1), recoveryDirectory: recDir, copyRetireAfter: const Duration(hours: 1), leaveSaveLimit: leaveSaveLimit);
+  Notebook make(
+    PageStore store, {
+    Duration leaveSaveLimit = const Duration(seconds: 5),
+  }) => Notebook(
+    store,
+    modules,
+    saveDelay: const Duration(hours: 1),
+    recoveryDirectory: recDir,
+    copyRetireAfter: const Duration(hours: 1),
+    leaveSaveLimit: leaveSaveLimit,
+  );
 
   // The page exists only as its copy-named file, and is open from it.
-  Future<void> start({PageStore Function(Directory)? store, Duration leaveSaveLimit = const Duration(seconds: 5)}) async {
+  Future<void> start({
+    PageStore Function(Directory)? store,
+    Duration leaveSaveLimit = const Duration(seconds: 5),
+  }) async {
     dir = await Directory.systemTemp.createTemp('noted_own_copy');
     recDir = Directory('${dir.path}-rec');
     modules = buildModules();
     baseBox = noteBox('base');
-    final page = NotedPage.create(PageMeta.create(id: id, title: 'Page', order: 0)).insertNode(baseBox);
+    final page = NotedPage.create(
+      PageMeta.create(id: id, title: 'Page', order: 0),
+    ).insertNode(baseBox);
     File(copyPath()).writeAsStringSync(writePage(page));
     st = (store ?? PageStore.new)(dir);
     nb = make(st, leaveSaveLimit: leaveSaveLimit);
@@ -105,18 +129,20 @@ void main() {
 
   tearDown(() async {
     nb.dispose();
-    for (final n in extra) {
-      n.dispose();
-    }
-    extra.clear();
     await deleteTestFolder(dir);
-    if (recDir.existsSync()) await busyRetry(() => recDir.delete(recursive: true));
+    if (recDir.existsSync()) {
+      await busyRetry(() => recDir.delete(recursive: true));
+    }
   });
 
   // The original comes back holding box A, which only it has.
   BoxRecord originalArrives() {
-    final a = noteBox('only in the original', at: const Bounds(400, 10, 200, 40));
-    File(originalPath()).writeAsStringSync(writePage(read(copyPath()).insertNode(a)));
+    final a = noteBox(
+      'only in the original',
+      at: const Bounds(400, 10, 200, 40),
+    );
+    File(originalPath())
+        .writeAsStringSync(writePage(read(copyPath()).insertNode(a)));
     return a;
   }
 
@@ -128,18 +154,27 @@ void main() {
     return c.page.node(e.id)! as BoxRecord;
   }
 
-  Future<List<String>> entries() async => [for (final e in (await nb.recoveryStoreForTest!.list()).entries) e.page.id];
+  Future<List<String>> entries() async => [
+    for (final e in (await nb.recoveryStoreForTest!.list()).entries) e.page.id,
+  ];
 
   // The merge has landed: A and [also] on screen and in the original, which
   // is the page's file, and the copy is gone after a recovery keep.
-  Future<void> expectMerged(BoxRecord a, [List<BoxRecord> also = const []]) async {
+  Future<void> expectMerged(
+    BoxRecord a, [
+    List<BoxRecord> also = const [],
+  ]) async {
     final want = {baseBox.id, a.id, for (final b in also) b.id};
     expect(ids(nb.current!.page), containsAll(want));
     await nb.flush();
     expect(ids(read(originalPath())), containsAll(want));
     expect(nb.pageFileForTest(id), originalPath());
     expect(File(copyPath()).existsSync(), isFalse);
-    expect(await entries(), contains(id), reason: 'the copy was kept in recovery first');
+    expect(
+      await entries(),
+      contains(id),
+      reason: 'the copy was kept in recovery first',
+    );
     expect(nb.unreadable, isEmpty);
     expect(nb.trouble.isTrouble, isFalse);
   }
@@ -160,11 +195,19 @@ void main() {
       final r = await nb.saveOpenPageForTest().timeout(within);
       expect(r.end, SaveEnd.landed);
       final copyText = File(copyPath()).readAsStringSync();
-      expect(readPage(copyText).node(e.id), isNotNull, reason: 'the save wrote the file it opened from');
+      expect(
+        readPage(copyText).node(e.id),
+        isNotNull,
+        reason: 'the save wrote the file it opened from',
+      );
       expect(nb.knownTextForTest(copyPath()), copyText);
       expect(nb.checkQueueIdleForTest, isTrue);
       expect(nb.unreadable, isEmpty);
-      expect(File(originalPath()).readAsStringSync(), originalText, reason: 'nothing merged inside the save');
+      expect(
+        File(originalPath()).readAsStringSync(),
+        originalText,
+        reason: 'nothing merged inside the save',
+      );
       expectNotMerged(a);
 
       await nb.checkFile(originalPath()).timeout(within);
@@ -219,7 +262,11 @@ void main() {
     expectNotMerged(a);
     failing.fail = false;
     final r = await nb.saveOpenPageForTest().timeout(within);
-    expect(r.end, SaveEnd.landed, reason: 'the save meets its own file, not a duplicate');
+    expect(
+      r.end,
+      SaveEnd.landed,
+      reason: 'the save meets its own file, not a duplicate',
+    );
     final copyText = File(copyPath()).readAsStringSync();
     expect(readPage(copyText).node(e.id), isNotNull);
     expect(nb.knownTextForTest(copyPath()), copyText);
@@ -235,7 +282,9 @@ void main() {
     await nb.flush();
     final copyText = File(copyPath()).readAsStringSync();
     nb.syncHook = (point, _) async {
-      if (point == 'own-copy-published') throw const FileSystemException('injected');
+      if (point == 'own-copy-published') {
+        throw const FileSystemException('injected');
+      }
     };
     await nb.checkFile(copyPath()).timeout(within);
     expect(nb.pageFileForTest(id), copyPath());
@@ -243,7 +292,11 @@ void main() {
     expect(nb.knownTextForTest(copyPath()), copyText);
     expect(nb.knownTextForTest(originalPath()), isNull);
     expect(File(copyPath()).readAsStringSync(), copyText);
-    expect(ids(read(originalPath())), containsAll({baseBox.id, a.id, e.id}), reason: 'the publish landed');
+    expect(
+      ids(read(originalPath())),
+      containsAll({baseBox.id, a.id, e.id}),
+      reason: 'the publish landed',
+    );
     expect(nb.current!.page.node(a.id), isNull);
     nb.syncHook = null;
     await nb.folderTickForTest().timeout(within);
@@ -256,9 +309,13 @@ void main() {
     final e = type('E');
     await nb.flush();
     final copyText = File(copyPath()).readAsStringSync();
-    final other = NotedPage.create(PageMeta.create(id: 'other', title: 'Other', order: 1)).insertNode(noteBox('other'));
+    final other = NotedPage.create(
+      PageMeta.create(id: 'other', title: 'Other', order: 1),
+    ).insertNode(noteBox('other'));
     nb.syncHook = (point, path) async {
-      if (point == 'own-copy-original') File(path).writeAsStringSync(writePage(other));
+      if (point == 'own-copy-original') {
+        File(path).writeAsStringSync(writePage(other));
+      }
     };
     final screen = writePage(nb.current!.page);
     await nb.checkFile(copyPath()).timeout(within);
@@ -278,19 +335,22 @@ void main() {
     expect(read(copyPath()).node(e.id), isNotNull);
   });
 
-  test('N4: a Discard between the snapshot and the publish publishes nothing', () async {
-    await start();
-    final a = originalArrives();
-    type('E');
-    final originalText = File(originalPath()).readAsStringSync();
-    nb.syncHook = (point, _) async {
-      if (point == 'own-copy-merged') nb.raiseFloorForTest();
-    };
-    await nb.checkFile(copyPath()).timeout(within);
-    nb.syncHook = null;
-    expect(File(originalPath()).readAsStringSync(), originalText);
-    expectNotMerged(a);
-  });
+  test(
+    'N4: a Discard between the snapshot and the publish publishes nothing',
+    () async {
+      await start();
+      final a = originalArrives();
+      type('E');
+      final originalText = File(originalPath()).readAsStringSync();
+      nb.syncHook = (point, _) async {
+        if (point == 'own-copy-merged') nb.raiseFloorForTest();
+      };
+      await nb.checkFile(copyPath()).timeout(within);
+      nb.syncHook = null;
+      expect(File(originalPath()).readAsStringSync(), originalText);
+      expectNotMerged(a);
+    },
+  );
 
   group('seams', () {
     test('an edit typed between the read-back and the re-point is kept and saved into the original', () async {
@@ -299,7 +359,9 @@ void main() {
       final e = type('E');
       BoxRecord? late;
       nb.syncHook = (point, _) async {
-        if (point == 'own-copy-published') late = type('typed late', at: const Bounds(10, 600, 0, 0));
+        if (point == 'own-copy-published') {
+          late = type('typed late', at: const Bounds(10, 600, 0, 0));
+        }
       };
       await nb.checkFile(copyPath()).timeout(within);
       nb.syncHook = null;
@@ -311,7 +373,10 @@ void main() {
       await start();
       final a = originalArrives();
       final e = type('E');
-      final b = noteBox('written meanwhile', at: const Bounds(400, 300, 200, 40));
+      final b = noteBox(
+        'written meanwhile',
+        at: const Bounds(400, 300, 200, 40),
+      );
       var rounds = 0;
       nb.syncHook = (point, path) async {
         if (point == 'own-copy-merged' && rounds++ == 0) {
@@ -345,7 +410,11 @@ void main() {
       nb.syncHook = null;
       await leaving;
       expect(nb.currentId, next);
-      expect(File(copyPath()).existsSync(), isTrue, reason: 'nothing was retired');
+      expect(
+        File(copyPath()).existsSync(),
+        isTrue,
+        reason: 'nothing was retired',
+      );
       await nb.checkFile(copyPath()).timeout(within);
       expect(File(copyPath()).existsSync(), isFalse);
       expect(ids(read(originalPath())), containsAll({baseBox.id, a.id, e.id}));
@@ -358,34 +427,45 @@ void main() {
       expect(ids(nb.current!.page), containsAll({baseBox.id, a.id, e.id}));
     });
 
-    test('the original not downloaded: not now, then its download event merges it', () async {
-      await start();
-      addTearDown(() => debugDatalessPaths = null);
-      final asked = <String>[];
-      nb.askDownload = (p) async {
-        asked.add(p);
-        return null;
-      };
-      final a = originalArrives();
-      final e = type('E');
-      debugMarkDataless(originalPath());
-      await nb.checkFile(copyPath()).timeout(within);
-      expectNotMerged(a);
-      expect(asked, contains(originalPath()));
-      debugUnmarkDataless(originalPath());
-      await nb.filesChanged([originalPath()]).timeout(within);
-      await expectMerged(a, [e]);
-    });
+    test(
+      'the original not downloaded: not now, then its download event merges it',
+      () async {
+        await start();
+        addTearDown(() => debugDatalessPaths = null);
+        final asked = <String>[];
+        nb.askDownload = (p) async {
+          asked.add(p);
+          return null;
+        };
+        final a = originalArrives();
+        final e = type('E');
+        debugMarkDataless(originalPath());
+        await nb.checkFile(copyPath()).timeout(within);
+        expectNotMerged(a);
+        expect(asked, contains(originalPath()));
+        debugUnmarkDataless(originalPath());
+        await nb.filesChanged([originalPath()]).timeout(within);
+        await expectMerged(a, [e]);
+      },
+    );
 
     test('the copy changed by another writer: not now, then merged', () async {
       await start();
       final a = originalArrives();
-      final c = noteBox('written into the copy', at: const Bounds(400, 600, 200, 40));
+      final c = noteBox(
+        'written into the copy',
+        at: const Bounds(400, 600, 200, 40),
+      );
       // Another writer adds C to the copy, and A to the original's base too.
-      File(copyPath()).writeAsStringSync(writePage(read(copyPath()).insertNode(c)));
+      File(copyPath())
+          .writeAsStringSync(writePage(read(copyPath()).insertNode(c)));
       await nb.checkFile(copyPath()).timeout(within);
       expectNotMerged(a);
-      expect(nb.current!.page.node(c.id), isNotNull, reason: 'the page took in the change first');
+      expect(
+        nb.current!.page.node(c.id),
+        isNotNull,
+        reason: 'the page took in the change first',
+      );
       await nb.folderTickForTest().timeout(within);
       await expectMerged(a, [c]);
     });
