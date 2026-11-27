@@ -167,6 +167,10 @@ class _TreeProxy implements PageTreeActions {
   Future<void> binderRemove(BinderSection binder) => _go((a) => a.binderRemove(binder));
   @override
   Future<void> binderSettings(BinderSection binder) => _go((a) => a.binderSettings(binder));
+  @override
+  Future<void> binderSaveZip(BinderSection binder) => _go((a) => a.binderSaveZip(binder));
+  @override
+  Future<void> openBinderZip() => _go((a) => a.openBinderZip());
 }
 
 /// The menu bar row: the brand mark, then File, Edit, View and Help, built from
@@ -358,7 +362,9 @@ class AppMenuBarState extends State<AppMenuBar> {
     return rows;
   }
 
-  CommandRegistry _headerRegistry() => pagesHeaderCommands(widget.notebook, _proxy);
+  // The Pages header's commands, with Open binder from .zip… after them.
+  CommandRegistry _headerRegistry() =>
+      pagesHeaderCommands(widget.notebook, _proxy)..register(openBinderZipCommand(widget.notebook, _proxy));
 
   @override
   void initState() {
@@ -782,7 +788,8 @@ class AppMenuBarState extends State<AppMenuBar> {
     // is not built on devices).
     items
       ..add(const _Divider())
-      ..add(_canvasItem(CanvasCommands.exportBox));
+      ..add(_canvasItem(CanvasCommands.exportBox))
+      ..add(_saveZipItem(ok));
     final id = nb.currentId;
     final meta = id == null || nb.cover != null ? null : nb.treeOfPage(id)[id];
     if (meta != null) {
@@ -800,7 +807,7 @@ class AppMenuBarState extends State<AppMenuBar> {
     final binder = _binderShown();
     if (binder != null) {
       final r = binderCommands(nb, binder, _proxy);
-      final hidden = {AppCommands.binderNewPage, AppCommands.binderNewPageFromTemplate};
+      final hidden = {AppCommands.binderNewPage, AppCommands.binderNewPageFromTemplate, AppCommands.binderSaveZip};
       final children = <_Entry>[
         for (final c in r.commands)
           if (!hidden.contains(c.id))
@@ -810,6 +817,23 @@ class AppMenuBarState extends State<AppMenuBar> {
       items.add(_Sub('Binder', children));
     }
     return items;
+  }
+
+  // File › Save binder as .zip…: the binder command for the open page's (or
+  // cover's) binder, off for a standalone page.
+  _Item _saveZipItem(bool ok) {
+    const label = 'Save binder as .zip…';
+    final binder = _binderShown();
+    if (binder != null) {
+      final r = binderCommands(widget.notebook, binder, _proxy);
+      final c = r[AppCommands.binderSaveZip];
+      final item = c == null
+          ? null
+          : _fromCommand(_Kind.binder, c, enabled: ok, binderPath: binder.path, label: label);
+      r.dispose();
+      if (item != null) return item;
+    }
+    return const _Item(kind: _Kind.binder, id: AppCommands.binderSaveZip, label: label, enabled: false);
   }
 
   // The open page's binder, or the cover's; null for a standalone page.

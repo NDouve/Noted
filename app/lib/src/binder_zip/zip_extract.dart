@@ -10,6 +10,7 @@
 // is written, so a rollback removes only that.
 
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:noted_core/noted_core.dart';
@@ -186,3 +187,15 @@ String binderZipFolderName(List<String> candidates) {
   }
   return 'Binder';
 }
+
+/// [checkBinderZip] of the zip at [zipPath], read in a background isolate.
+Future<BinderZipPlan> checkBinderZipInIsolate(String zipPath) =>
+    Isolate.run(() => checkBinderZip(File(zipPath).readAsBytesSync()));
+
+/// [extractBinderZip] in a background isolate.
+Future<ZipExtraction> extractBinderZipInIsolate(
+  String zipPath,
+  String staging,
+  BinderZipPlan plan,
+  Uint8List binderBytes,
+) => Isolate.run(() => extractBinderZip(zipPath, staging, plan, binderBytes));

@@ -11,7 +11,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:isolate';
 
 import 'package:flutter/foundation.dart';
 import 'package:noted_core/noted_core.dart';
@@ -101,13 +100,11 @@ class BinderZipOpen {
     return nb.binderZipParentRefusal(p);
   }
 
-  /// Runs the open. Throws a [BinderZipException] with the notice when
-  /// nothing was added.
-  Future<BinderZipOpened> run() async {
-    final zip = zipPath;
-    // A placeholder or a file over the limit is refused before it is read.
+  /// Refuses a `.zip` that is a placeholder or over the limit, before it is
+  /// read (metadata only).
+  static Future<void> checkZipFile(Notebook nb, String zip) async {
     if (notDownloaded(zip) || (Platform.isWindows && placeholderState(zip) != PlaceholderState.notPlaceholder)) {
-      askSafely(zip, notebook.askDownload);
+      askSafely(zip, nb.askDownload);
       throw zipRefused("it isn't downloaded yet");
     }
     final int length;
@@ -117,13 +114,20 @@ class BinderZipOpen {
       throw zipRefused("it can't be read");
     }
     if (length > BinderZipLimits.archiveBytes) throw zipRefused('it is too large');
+  }
+
+  /// Runs the open. Throws a [BinderZipException] with the notice when
+  /// nothing was added.
+  Future<BinderZipOpened> run() async {
+    final zip = zipPath;
+    await checkZipFile(notebook, zip);
     final refused = parentRefusal(notebook, parent, roots);
     if (refused != null) throw BinderZipException(refused);
 
     // Check before writing, in the isolate, which reads the zip itself.
     final BinderZipPlan plan;
     try {
-      plan = await Isolate.run(() => checkBinderZip(File(zip).readAsBytesSync()));
+      plan = await checkBinderZipInIsolate(zip);
     } on FileSystemException {
       throw zipRefused("it can't be read");
     }
@@ -163,7 +167,7 @@ class BinderZipOpen {
         why = 'a path in it is too long';
       } else {
         final stagingPath = staging.path;
-        final x = await Isolate.run(() => extractBinderZip(zip, stagingPath, plan, bytes));
+        final x = await extractBinderZipInIsolate(zip, stagingPath, plan, bytes);
         made
           ..files.addAll(x.files)
           ..folders.addAll(x.folders)

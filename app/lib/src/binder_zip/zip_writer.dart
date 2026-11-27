@@ -10,6 +10,7 @@
 
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:noted_core/noted_core.dart';
@@ -377,3 +378,29 @@ List<ZipRecord> compactZip(String from, String to, List<ZipRecord> records) {
   }
   return out;
 }
+
+// The isolate calls, made from top-level functions so that a closure never
+// carries its caller's state into the isolate.
+
+/// [appendZipEntries] in a background isolate.
+Future<({List<ZipAdded> added, int end, bool overArchive})> appendZipEntriesInIsolate(
+  String zipPath,
+  int offset,
+  List<ZipSource> sources, {
+  required int fileLimit,
+  required int archiveLimit,
+  ZipReadPause? pause,
+}) => Isolate.run(
+  () => appendZipEntries(zipPath, offset, sources, fileLimit: fileLimit, archiveLimit: archiveLimit, pause: pause),
+);
+
+/// [compactZip] in a background isolate.
+Future<List<ZipRecord>> compactZipInIsolate(String from, String to, List<ZipRecord> records) =>
+    Isolate.run(() => compactZip(from, to, records));
+
+/// [finishZip] in a background isolate.
+Future<int> finishZipInIsolate(String zipPath, int offset, List<ZipRecord> records) =>
+    Isolate.run(() => finishZip(zipPath, offset, records));
+
+/// The [ContentIdentity] of the file at [path], hashed in a background isolate.
+Future<ContentIdentity> identityInIsolate(String path) => Isolate.run(() => ContentIdentity.ofFile(path));

@@ -8,6 +8,7 @@ import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
 
 import 'app_settings.dart';
+import 'binder_zip/binder_zip_flow.dart' show binderZipSupported;
 import 'notebook.dart';
 import 'notebook_search.dart';
 
@@ -40,6 +41,8 @@ abstract final class AppCommands {
   static const String binderSaveAsTemplate = 'app.binder.saveAsTemplate';
   static const String binderRemove = 'app.binder.remove';
   static const String binderSettings = 'app.binder.settings';
+  static const String binderSaveZip = 'app.binder.saveZip';
+  static const String openBinderZip = 'app.binder.openZip';
 
 
   // Theme.
@@ -100,6 +103,8 @@ abstract interface class PageTreeActions {
   Future<void> binderSaveAsTemplate(BinderSection binder);
   Future<void> binderRemove(BinderSection binder);
   Future<void> binderSettings(BinderSection binder);
+  Future<void> binderSaveZip(BinderSection binder);
+  Future<void> openBinderZip();
 }
 
 /// New page's keys, also used by the home when no page tree is on screen.
@@ -282,6 +287,13 @@ CommandRegistry binderCommands(
         icon: Icons.bookmark_add_rounded,
         invoke: () => a.binderSaveAsTemplate(b),
       ),
+      if (binderZipSupported)
+        Command(
+          id: AppCommands.binderSaveZip,
+          label: 'Save as .zip…',
+          icon: Icons.folder_zip_outlined,
+          invoke: () => a.binderSaveZip(b),
+        ),
     ]);
   }
   registry.register(
@@ -294,6 +306,15 @@ CommandRegistry binderCommands(
   );
   return registry;
 }
+
+/// File › Open binder from .zip… (desktop; the menu bar only).
+Command openBinderZipCommand(Notebook nb, PageTreeActions a) => Command(
+  id: AppCommands.openBinderZip,
+  label: 'Open binder from .zip…',
+  icon: Icons.folder_zip_outlined,
+  enabled: () => nb.pickFolder != null,
+  invoke: a.openBinderZip,
+);
 
 /// The settings commands that change a default folder: each opens the folder
 /// picker and stores the folder. A [NotebookException] (a folder that holds a

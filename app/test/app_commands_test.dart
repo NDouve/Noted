@@ -58,6 +58,10 @@ class _Actions implements PageTreeActions {
   @override
   Future<void> binderSettings(BinderSection binder) async {}
   @override
+  Future<void> binderSaveZip(BinderSection binder) async {}
+  @override
+  Future<void> openBinderZip() async {}
+  @override
   Future<void> pageSettings(PageMeta page) async => calls.add('pageSettings ${page.id}');
 }
 
