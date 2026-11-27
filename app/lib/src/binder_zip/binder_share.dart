@@ -13,6 +13,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:isolate';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:noted_core/noted_core.dart';
 
 import '../attachment_copy.dart' show removeFolderCoordinated;
@@ -27,17 +28,25 @@ String get binderZipDownloadingMessage => appleMode()
     ? "Some of this binder's files are still downloading. Save it again once they're here."
     : 'Make these files available on this device first.';
 
+/// A test seam: the placeholder state of a path, used on every platform when
+/// set (production checks it on Windows only, with [placeholderState]).
+@visibleForTesting
+PlaceholderState Function(String path)? debugZipPlaceholderState;
+
 const String binderZipTooLargeMessage = 'This binder is too large to save as a .zip.';
 const String binderZipKeptChangingMessage = 'This binder kept changing. Try again.';
 
 /// A zip a share made, in the app's temp folder, with the identity it was
 /// written with.
 final class BinderZipMade {
-  const BinderZipMade(this.path, this.identity, this.workDir);
+  const BinderZipMade(this.path, this.identity, this.workDir, {this.ownsDir = true});
 
   final String path;
   final ContentIdentity identity;
   final Directory workDir;
+
+  /// Whether the share made [workDir] (and removes it once empty).
+  final bool ownsDir;
 
   /// Removes the zip through `deleteFileIfMatches(identity:)`, then its
   /// folder if it is empty.
@@ -49,7 +58,7 @@ final class BinderZipMade {
     } on FileSystemException {
       // Kept; the OS clears its temp folder.
     }
-    await _removeEmpty(workDir);
+    if (ownsDir) await _removeEmpty(workDir);
   }
 }
 
@@ -257,9 +266,10 @@ class BinderZipShare {
         folders.add('$root$_sep${rel.take(i).join(_sep)}');
       }
     }
-    if (Platform.isWindows) {
+    final state = debugZipPlaceholderState ?? (Platform.isWindows ? placeholderState : null);
+    if (state != null) {
       for (final p in [...folders, for (final f in files.values) f.path]) {
-        if (placeholderState(p) != PlaceholderState.notPlaceholder) missing.add(p);
+        if (state(p) != PlaceholderState.notPlaceholder) missing.add(p);
       }
     }
     return _Listing(files, missing);
@@ -397,7 +407,7 @@ class BinderZipShare {
     final path = zip;
     await finishZipInIsolate(path, at, list);
     final identity = await identityInIsolate(path);
-    return BinderZipMade(zip, identity, _work);
+    return BinderZipMade(zip, identity, _work, ownsDir: workDir == null);
   }
 
   // Removes a zip this share built and no longer needs, against what it holds
