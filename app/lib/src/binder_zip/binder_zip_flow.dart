@@ -50,6 +50,8 @@ Future<String?> saveBinderZip(
 }) async {
   assert(Notebook.binderZipJobKind == null, 'a share started inside a binder .zip job');
   nb.binderZipRefuseWhileHeld();
+  // What the open cover has typed counts as an edit, as hiding the cover does.
+  nb.binderZipTakeCoverTyping(b.path);
   await nb.flush();
   // A save that failed leaves its edits in the editor or recovery: refused.
   if (nb.binderHasUnsavedEdits(b.path)) return binderZipUnsavedMessage;

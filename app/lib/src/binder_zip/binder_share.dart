@@ -188,6 +188,7 @@ class BinderZipShare {
   ContentIdentity? _zipIdentity;
   int _end = 0;
   bool _dead = false;
+  int _deadBytes = 0;
   int _copies = 0;
 
   /// The rounds the last [run] took (for tests).
@@ -241,7 +242,11 @@ class BinderZipShare {
         if (changed.isEmpty && removed.isEmpty) break;
         if (round >= rounds) throw const BinderZipException(binderZipKeptChangingMessage);
         for (final k in [...removed, ...changed]) {
-          if (_captured.remove(k) != null) _dead = true;
+          final gone = _captured.remove(k);
+          if (gone != null) {
+            _dead = true;
+            _deadBytes += gone.record.end - gone.record.offset;
+          }
         }
         listing = now;
         toRead = changed;
@@ -390,7 +395,9 @@ class BinderZipShare {
       at,
       sources,
       fileLimit: BinderZipLimits.fileBytes,
-      archiveLimit: archiveLimit,
+      // Dead bytes (entries read again, or gone) go at the compaction: they
+      // don't count here. The finished zip is checked exactly.
+      archiveLimit: archiveLimit + _deadBytes,
       centralBytes: [for (final c in _captured.values) zipCentralBytes(c.record.name)].fold(0, (a, b) => a + b),
       pause: pause,
       hash: hash,

@@ -303,6 +303,23 @@ void main() {
       expect(work.listSync(), isEmpty);
     });
 
+    test('a binder that changed near the limit is made when its compacted zip fits', () async {
+      final w = await world();
+      final busy = File('${w.folder.path}$sep${w.page}.assets${sep}busy.bin')..writeAsStringSync('a' * 4000);
+      final first = await share(w.nb, w.b).run();
+      final size = first.identity.length;
+      await first.remove();
+      final s = BinderZipShare(w.nb, w.b.path, topName: 'Work', workDir: work, archiveLimit: size, afterCapture: (round) async {
+        // The same length again: the entry read again leaves dead bytes behind.
+        if (round == 1) busy.writeAsStringSync('b' * 4000);
+      });
+      final made = await s.run();
+      expect(s.roundsTaken, 2);
+      expect(made.identity.length, size);
+      expect(String.fromCharCodes(zipFiles(made.path)['Work/${w.page}.assets/busy.bin']!), 'b' * 4000);
+      await made.remove();
+    });
+
     test("the append check counts each entry's central record and the end record", () {
       final f = File('${root.path}${sep}a.bin')..writeAsBytesSync(List.filled(100, 7));
       final zip = '${root.path}${sep}z.zip';
@@ -356,6 +373,39 @@ void main() {
       expect(said, "Some edits in this binder aren't saved yet. Nothing was saved.");
       expect(out.listSync(), isEmpty, reason: 'nothing is published');
       t.storeFor(t.other).failWith = null;
+    });
+
+    test('a refused cover change (the binder file read-only) refuses the share, and nothing is published', () async {
+      final f = await failing();
+      final file = File('${t.other.path}$sep$binderFileName');
+      if (Platform.isWindows) {
+        Process.runSync('attrib', ['+r', file.path]);
+      } else {
+        Process.runSync('chmod', ['444', file.path]);
+      }
+      try {
+        await f.nb.updateBinder(f.b.path, description: 'not written');
+        await f.nb.flush();
+        await settleNotebooks(notebooks: [f.nb]);
+        expect(f.nb.coverPendingFor(f.b.path), isNotEmpty, reason: 'the change is kept as Not saved yet');
+        final out = Directory('${t.root.path}${sep}out')..createSync();
+        binderZipSavePicker = (_) async => '${out.path}${sep}Work.zip';
+        final said = await saveBinderZip(
+          f.nb,
+          f.b,
+          roots: () => f.nb.exportRefusedFolders,
+          writer: ExportWriter(askReplace: (_) async => true, askPutBack: (_, _) async => false),
+        );
+        expect(said, binderZipUnsavedMessage);
+        expect(out.listSync(), isEmpty, reason: 'nothing is published');
+      } finally {
+        if (Platform.isWindows) {
+          Process.runSync('attrib', ['-r', file.path]);
+        } else {
+          Process.runSync('chmod', ['644', file.path]);
+        }
+        await f.nb.discardCoverChanges(f.b.path);
+      }
     });
 
     test('a save that fails during the share refuses it at the final check', () async {

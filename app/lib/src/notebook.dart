@@ -7822,6 +7822,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
     if (inBinder(_pendingSave?.id)) return true;
     if (_trouble.kind != TroubleKind.saved && inBinder(_trouble.pageId)) return true;
+    // The binder file's own edits: cover changes not written yet ("Not saved
+    // yet"), and queued settings.
+    final listed = _binders.keys.where((p) => _key(p) == key).firstOrNull;
+    if (listed != null && (coverPendingFor(listed).isNotEmpty || (_binders[listed]?.pending.isNotEmpty ?? false))) {
+      return true;
+    }
     final rec = _recovery;
     if (rec != null) {
       for (final e in rec.indexEntries) {
@@ -7829,6 +7835,12 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       }
     }
     return false;
+  }
+
+  /// Takes what the open cover of binder [path] has typed into its pending
+  /// changes, as hiding the cover does, so a share's flush and check see it.
+  void binderZipTakeCoverTyping(String path) {
+    if (_coverTypingPath != null && _key(_coverTypingPath!) == _key(_normalizePath(path))) _takeCoverTyping();
   }
 
   /// [_refuseWhileHeld] for the binder .zip commands, before any picker.
