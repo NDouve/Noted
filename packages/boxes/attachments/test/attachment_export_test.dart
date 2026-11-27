@@ -42,6 +42,22 @@ class _Source implements ExportImageSource {
   void dispose() {}
 }
 
+// Header-only PNG bytes: the signature and an IHDR claiming [w] x [h].
+Uint8List pngHeader(int w, int h) {
+  final d = ByteData(33);
+  const sig = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+  for (var i = 0; i < 8; i++) {
+    d.setUint8(i, sig[i]);
+  }
+  d.setUint32(8, 13);
+  d.setUint32(12, 0x49484452);
+  d.setUint32(16, w);
+  d.setUint32(20, h);
+  d.setUint8(24, 8);
+  d.setUint8(25, 6);
+  return d.buffer.asUint8List();
+}
+
 AttachmentRef embedded(String name, Uint8List bytes) =>
     AttachmentRef(name: name, size: bytes.length, hash: contentHash(bytes), bytes: bytes);
 
@@ -119,6 +135,60 @@ void main() {
       final f = await image.export(imageData(embedded('red.png', redPng)), ExportFormat.png, contextOf(null));
       expect(f!.bytes, same(redPng));
       expect(source.decodes, 0);
+    });
+
+    group('a PNG over the raster caps', () {
+      final refusal = isA<ExportRefused>().having(
+        (e) => e.message,
+        'message',
+        'big.png is too large to convert. Export the original instead.',
+      );
+
+      for (final (w, h, label) in [
+        (8000, 6000, 'both sides and pixels'),
+        (5000, 100, 'the side limit'),
+        (4096, 4097, 'the pixel count and a side'),
+        (4000, 4001, 'the pixel count only'),
+      ]) {
+        test('is decoded at the cap, not passed through: $label', () async {
+          final source = _Source(w, h);
+          exportImageOpener = (_) async => source;
+          final png = pngHeader(w, h);
+          final f = await image.export(imageData(embedded('big.png', png)), ExportFormat.png, contextOf(null));
+          expect(f, isNull); // the fake's decode fails
+          expect(source.decodes, 1);
+        });
+      }
+
+      test('over 100 MP is refused with the limit\'s message, and not decoded', () async {
+        final source = _Source(12000, 10000);
+        exportImageOpener = (_) async => source;
+        final png = pngHeader(12000, 10000);
+        await expectLater(
+          image.export(imageData(embedded('big.png', png)), ExportFormat.png, contextOf(null)),
+          throwsA(refusal),
+        );
+        expect(source.decodes, 0);
+      });
+
+      test('Original is the unchanged bytes', () async {
+        final png = pngHeader(8000, 6000);
+        final f = await image.export(imageData(embedded('big.png', png)), ExportFormat.original, contextOf(null));
+        expect(f!.bytes, png);
+      });
+
+      test('at the cap exactly passes through; a malformed header does not', () async {
+        final source = _Source(4096, 3906);
+        exportImageOpener = (_) async => source;
+        final ok = pngHeader(4096, 3906); // 15.99 MP
+        final f = await image.export(imageData(embedded('a.png', ok)), ExportFormat.png, contextOf(null));
+        expect(f!.bytes, same(ok));
+        // IHDR type damaged: the size can't be trusted, so it is decoded.
+        final bad = Uint8List.fromList(ok)..[13] = 0x58;
+        final g = await image.export(imageData(embedded('a.png', bad)), ExportFormat.png, contextOf(null));
+        expect(g, isNull);
+        expect(source.decodes, 1);
+      });
     });
 
     testWidgets('a GIF gives a PNG of its first frame', (t) async {
