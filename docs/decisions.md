@@ -2748,7 +2748,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0196 — Attachments that are not downloaded
 - **Date:** 2026-11-26
-- **Status:** Active (the build team (PM), run 2026-11-25-01, from the reviewed note `2026-11-24-01-t2a-attachment-download` revision 8 and its build rules); amends 0190 and 0132; Box API 0.17
+- **Status:** Active (the build team (PM), run 2026-11-25-01, from the reviewed note `2026-11-24-01-t2a-attachment-download` revision 8 and its build rules); amends 0190 and 0132; Box API 0.17; a folder that can't be listed amended by 0202
 - **Decision:**
   - **The attachment store asks for downloads.** On opening a page and on each change, the store asks for the attachments that are not downloaded, at most once per 30 s per file and at once on Retry. The image box and the file box show "Downloading…" or "Can't download" (the platform's message as tooltip) with *Retry*; opening a downloading file says "This file is still downloading. Open it again once it's here." A write over an attachment that is not downloaded is refused as busy, with no kept copy.
   - **Copies never copy what is not here.** Every copy of a page's files — a move across drives, Save a copy, template saves, a new page or binder from a template, a put-back across drives — lists its files first and refuses before copying, or mid-copy, removing only what it created. A refused rollback leaves the files of anything that still stands (a template, a page sync changed).
@@ -2760,7 +2760,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0197 — Export one box (desktop)
 - **Date:** 2026-11-26
-- **Status:** Active (the build team (PM), run 2026-11-25-01, steps 1 and 2 of the reviewed note `2026-11-24-01-t4-export`); Box API 0.18
+- **Status:** Active (the build team (PM), run 2026-11-25-01, steps 1 and 2 of the reviewed note `2026-11-24-01-t4-export`); Box API 0.18; PNG export amended by 0202
 - **Decision:**
   - **What.** *File → Export…* on desktop exports the one selected box. Formats by box: note and AI box as plain text, Markdown, HTML or PNG; drawing as PNG or SVG; image as its original or PNG; file box as its original; and, where a module gives an image, JPEG and a single-page raster PDF made by the app. An encrypted, disallowed or switched-off box can't be exported. Not on phones and tablets yet.
   - **Writing.** The file is written beside the target as a temp and published without replacing. A file of that name is replaced only after Noted's own "Replace <name>?" and only if it still has the content it had before the question; otherwise the previous file is kept aside and named, with *Put back*. Where hard links don't work (the macOS sandbox grants only the chosen file), a new file is created exclusively and a name that is taken is refused. Noted's own folders are refused as targets. Names are capped so every temp name stays within 255 bytes.
@@ -2816,6 +2816,49 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - closing the page, merging it closed and reopening it (could discard the only copy of unsaved edits);
   - deferring the merge to a job queued from the save (it waited on itself again);
   - leaving the case to the next launch.
+
+## 0201 — Share and open a binder as a `.zip` (desktop)
+- **Date:** 2026-11-26
+- **Status:** Active (the build team (PM), run 2026-11-26-01, from the reviewed note `2026-11-26-01-t6-binder-zip` revision 3 and its build rules); not on phones and tablets (iOS, Android) yet
+- **Decision:**
+  - **Entry points:** File → Save binder as .zip… and Open binder from .zip…, and Save as .zip… in a binder row's menu.
+  - **What a share holds:** one top folder named after the binder, holding the binder file and its copies, every page file (conflict copies included), every `*.assets` folder except set-asides, and `templates/`. Each file is copied byte for byte and never parsed (invariant 2). Noted's own temporaries, links and other files are left out.
+  - **Sharing:**
+    - It refuses while edits in the binder aren't saved, while a file isn't downloaded, and when a folder can't be read.
+    - Page, binder and template files are copied in short folder-locked reads. Attachments are read outside the lock.
+    - A metadata-only check under the lock compares every listing and file stamp. A change means another round, up to three, then "This binder kept changing. Try again."
+    - The finished zip is published like an export (0197): never replacing, with "Replace <name>?" and *Put back*, and not into Noted's own folders.
+  - **Opening:**
+    - The user picks the zip, then a parent folder outside Noted's folders (the default binder folder is allowed).
+    - Everything is checked before anything is written. These are refused:
+      - absolute paths, drive letters, `.`/`..` and empty components, names Windows can't hold, and names that are not UTF-8;
+      - links and other special entries, case twins, duplicate names, and a file that is also a folder;
+      - more than 20,000 entries, an archive over 1 GiB, over 2 GiB uncompressed, or a file over 256 MiB;
+      - a zip with no binder file, or a binder file that is invalid, has a duplicate key, or is already listed.
+    - It extracts into a hidden folder, creating each file exclusively and checking its CRC. The binder file is written last, with AI access set to Guarded, then read back and verified.
+    - The folder is renamed into place without replacing, adding " (2)" and so on; a busy rename is retried for about 5 s. Then the binder is added through the normal path.
+    - On a failure, only files still holding the bytes written are removed; anything else is kept and named.
+  - **AI access:** an opened binder is Guarded. A binder shared as Open or Privileged opens as Guarded, and the notice says "AI access was set to Guarded."
+  - **Known limits:**
+    - opening a share of a binder already listed on this device is refused;
+    - a crash during an open leaves the hidden staging folder;
+    - pages whose ids are in another binder are listed as duplicates;
+    - a file rewritten in place with the same size and time between stamps isn't seen.
+- **Rationale:** the scope's "sharing and opening a binder as a plain `.zip` of its folder", without parsing box data, and without an opened archive overwriting, escaping its folder or loosening AI access.
+- **Alternatives considered:**
+  - `package:archive` (not a Dart or Flutter team package);
+  - extracting straight into the chosen folder (a half-extracted binder could be discovered);
+  - holding the folder lock for the whole share (design revision 1: it stalled every save, and on Windows an unlocked read made saves fail).
+
+## 0202 — A folder that can't be listed is never treated as empty
+- **Date:** 2026-11-26
+- **Status:** Active (the build team (PM), run 2026-11-26-01, Codex run-diff 2026-11-26 R-1 and R-2); amends 0196 and 0197
+- **Decision:**
+  - **Folder walks.** A folder whose listing fails counts as holding a file that isn't downloaded, on every platform, so every guard that reads the walk refuses: the Apple move and delete guards, page copies, templates and the binder share. A folder that is gone (its error code says so and nothing is at its path) is skipped.
+  - **Wording.** In page copies, templates, the Apple delete guard and the binder share, when the only problem is a folder that can't be read, the refusal says so ("A folder can't be read, so it was not copied.", "A folder of this page can't be read.", "A folder of this binder can't be read. Nothing was saved."), and no download is asked for. The Apple move guards still ask for it and report the move as busy.
+  - **PNG export (amends 0197).** An image box's PNG export goes through the same raster limits as JPEG and PDF. It is passed through unchanged only when its header is valid and within 4,096 px a side and 16 MP. Otherwise it is decoded within the caps, or refused over 100 MP. *Original* is unrestricted.
+- **Rationale:** a failed listing let a folder holding an evicted file be renamed; a large PNG bypassed the export caps.
+- **Alternatives considered:** refusing only in Apple mode (other platforms would still treat a failed listing as empty); refusing every PNG over the caps (stricter than JPEG and PDF for the same image).
 
 ---
 
