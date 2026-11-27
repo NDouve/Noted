@@ -120,7 +120,7 @@ void main() {
     put('noted-binder.json.12-ab-cd.cas-old', 'aside');
     put('${w.page}.assets${sep}x.tmp', 'an attachment named x.tmp');
     put('${w.page}.assets${sep}y.png.12-ab-cd.cas-verified', 'aside');
-    put('${w.page}.assets${sep}.y.png.noted-copy-1.tmp', 'staging');
+    put('${w.page}.assets$sep.y.png.noted-copy-1.tmp', 'staging');
     put('${w.page}.deleted-0123456789ab.assets${sep}old.png', 'set aside');
     put('templates${sep}t.notedtemplate', '{}');
     put('desktop.ini', 'x');

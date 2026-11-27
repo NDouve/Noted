@@ -260,7 +260,7 @@ void main() {
       final parentLen = parent.path.length;
       // Short enough for each component, too long once placed.
       final room = 259 - parentLen - '/B (99)/p.assets/'.length;
-      await expectRefused([CraftedEntry('B/p.assets/${'a' * (room + 1).clamp(1, 255)}', 'x')], "${cant}a path in it is too long.");
+      await expectRefused([CraftedEntry('B/p.assets/${'a' * (room + 1).clamp(1, 255)}', 'x')], '${cant}a path in it is too long.');
     });
 
     test('links and other non-regular entries', () async {

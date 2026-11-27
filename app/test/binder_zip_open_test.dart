@@ -5,7 +5,6 @@
 // Opening a binder from a .zip (design t6 §4, §9 "Open", build rules Z1 and
 // Z2), on the real file system and with no injected opener.
 
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
