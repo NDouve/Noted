@@ -85,7 +85,7 @@ ZipExtraction extractBinderZip(String zipPath, String staging, BinderZipPlan pla
   final sep = Platform.pathSeparator;
   String at(List<String> rel) => '$staging$sep${rel.join(sep)}';
   try {
-    final bytes = File(zipPath).readAsBytesSync();
+    final bytes = readZipBytes(zipPath);
     final ZipReader reader;
     try {
       reader = ZipReader(bytes, binderZipReadLimits);
@@ -190,7 +190,7 @@ String binderZipFolderName(List<String> candidates) {
 
 /// [checkBinderZip] of the zip at [zipPath], read in a background isolate.
 Future<BinderZipPlan> checkBinderZipInIsolate(String zipPath) =>
-    Isolate.run(() => checkBinderZip(File(zipPath).readAsBytesSync()));
+    Isolate.run(() => checkBinderZip(readZipBytes(zipPath)));
 
 /// [extractBinderZip] in a background isolate.
 Future<ZipExtraction> extractBinderZipInIsolate(
@@ -199,3 +199,12 @@ Future<ZipExtraction> extractBinderZipInIsolate(
   BinderZipPlan plan,
   Uint8List binderBytes,
 ) => Isolate.run(() => extractBinderZip(zipPath, staging, plan, binderBytes));
+
+/// The bytes of the `.zip` at [zipPath], through the routed read (0190): one
+/// that is not downloaded is never read. Throws a [FileSystemException] when
+/// it can't be read.
+Uint8List readZipBytes(String zipPath) => switch (readStoredSync(zipPath)) {
+  StoredBytes(:final bytes) => bytes,
+  StoredFailed(:final error) => throw error,
+  _ => throw FileSystemException("The .zip can't be read", zipPath),
+};

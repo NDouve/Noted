@@ -97,7 +97,18 @@ const Map<String, _Allowed> _allowed = {
   'packages/noted_mcp/lib/src/running_probe.dart::LockGate.take::open': (count: 1, reason: _mcp),
   'packages/noted_mcp/lib/src/closed_writer.dart::ClosedWriter.replacePage::readAsBytes': (count: 3, reason: _mcp),
 
+  // A binder .zip: the zip a share builds in its own temp folder, read back by
+  // the same share (compacted, finished) and by its publish.
+  'app/lib/src/binder_zip/zip_writer.dart::_RafSink.close::openSync': (count: 1, reason: _ownTemp),
+  'app/lib/src/binder_zip/zip_writer.dart::compactZip::openSync': (count: 2, reason: _ownTemp),
+  'app/lib/src/binder_zip/zip_writer.dart::finishZip::openSync': (count: 1, reason: _ownTemp),
+  'app/lib/src/export/exclusive_create.dart::createExclusiveFromFile::openSync': (count: 2, reason: _ownTemp),
+  'app/lib/src/export/export_write.dart::ExportWriter._copyTo::openRead': (count: 1, reason: _ownTemp),
+
   // Write-only opens (append or write mode, no read).
+  'app/lib/src/binder_zip/binder_share.dart::_copyOwn::openSync': (count: 1, reason: _writeOnly),
+  'app/lib/src/binder_zip/zip_extract.dart::createNewFile::openSync': (count: 1, reason: _writeOnly),
+  'app/lib/src/export/export_write.dart::ExportWriter._copyTo::open': (count: 1, reason: _writeOnly),
   'app/lib/src/ai/ai_access_service.dart::AiAccessService._hasRevoked::openSync': (count: 1, reason: _writeOnly),
   'app/lib/src/ai/ai_access_service.dart::AiAccessService.trimMcpLog::openSync': (count: 1, reason: _writeOnly),
   'app/lib/src/ai/ai_running_lock.dart::AiRunningLock._tryOnce::openSync': (count: 1, reason: _writeOnly),
