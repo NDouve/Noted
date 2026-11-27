@@ -653,7 +653,7 @@ void main() {
       id: b.id,
       typeId: b.typeId,
       dataVersion: b.dataVersion,
-      bounds: b.bounds!,
+      bounds: b.bounds,
       data: RawJson.encode(data),
       snapshotText: 'snap:$data',
       rev: b.rev!,

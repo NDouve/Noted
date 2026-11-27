@@ -606,7 +606,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 - **Decision:**
   - **Detection:** a file `<stem>-<suffix>.canvas` is a conflict copy when `<stem>.canvas` exists in the same folder and both have the same page id. OneDrive appends `-<COMPUTERNAME>`, then `-<COMPUTERNAME>-<n>`. This naming is *unverified*, so a broader suffix pattern is accepted. *(Amended by 0171: the recognised suffixes now also include Drive for desktop ` (n)`, Nextcloud ` (conflicted copy …)`, older ownCloud `_conflict-…` and Finder-style ` n`, and every combination of suffixes is tried, shortest stem first. A chosen file (0137, 0149) is never a copy and is preferred as the original.)*
   - **Merge**, box by box into the original. There is no common base, so revisions decide:
-    - same `rev`: the same version
+    - same `rev`: the same version *(amended by 0199: and the same content)*
     - the copy's `baseRev` is the original's `rev`: take the copy
     - the reverse: keep the original
     - otherwise: keep the original and record the copy in `conflicts` (0051).
@@ -2787,11 +2787,12 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 - **Status:** Active (the build team (PM), run 2026-11-26-01, from the reviewed note `2026-11-26-01-t3-revision-content`); amends 0053 and 0183
 - **Decision:**
   - Two boxes with a `rev` are the same version only when the rev **and** the content are equal. Content means the type, the data version, the raw text of `data` and the snapshot text, compared byte for byte. Position, size, `conflicts`, the landed marker, device and time don't count. A box without a `rev` is matched on content alone.
-  - The rule applies wherever a version decides a merge, a retirement, a settled record or a recovery delete:
+  - The rule applies wherever a version decides a conflict-copy merge, a retirement, a settled record or a recovery delete:
     - the conflict-copy merge and its verification;
     - the consumed-copy re-check (0183);
     - lost-edit recording and landed repair;
     - *Keep mine* settling (0120).
+  - The three-way merge (0051, `page_merge.dart`) is unchanged: it still treats an equal `rev` as the same version.
   - In a conflict-copy merge, an equal `rev` with other content records the copy's version in `conflicts`, like any other conflict.
   - **Known limit:** resolving such a conflict keeps rev R on both sides, so a later copy between the same two versions can raise it again.
 - **Rationale:** another JSON Canvas editor that duplicates a box, or a sync client putting back an older file, keeps a box's revision with other content. Matching on revision alone could retire the only copy of a kept version.
