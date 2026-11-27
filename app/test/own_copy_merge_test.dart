@@ -352,6 +352,74 @@ void main() {
     },
   );
 
+  group('the retired copy (codex t8 pre-merge R-1)', () {
+    test('a box deleted before the merge is not brought back by the copy\'s re-check', () async {
+      await start();
+      final a = noteBox(
+        'only in the original',
+        at: const Bounds(400, 10, 200, 40),
+      );
+      nb.current!.delete(baseBox.id); // not saved yet: the copy still holds it
+      File(originalPath()).writeAsStringSync(
+        writePage(read(copyPath()).removeNode(baseBox.id).insertNode(a)),
+      );
+      await nb.checkFile(copyPath()).timeout(within);
+      expect(nb.pageFileForTest(id), originalPath());
+      expect(File(copyPath()).existsSync(), isFalse);
+      expect(
+        await entries(),
+        contains(id),
+        reason: 'the copy, with the box, is kept',
+      );
+      expect(read(originalPath()).node(baseBox.id), isNull);
+      await nb.createPage(); // the page is left
+      await nb.recheckConsumedCopiesForTest();
+      final disk = read(originalPath());
+      expect(disk.node(baseBox.id), isNull, reason: 'the user deleted it');
+      expect(disk.node(a.id), isNotNull);
+      expect(await entries(), isEmpty, reason: 'the re-check retired the copy');
+    });
+
+    test('an issue settled before the merge is not brought back by the copy\'s re-check', () async {
+      await start();
+      final theirs = noteBox('theirs', at: const Bounds(10, 900, 200, 40));
+      final conflicted = baseBox.withConflicts([
+        BoxConflict.other(node: theirs.toRaw(), at: 1),
+      ]);
+      File(
+        copyPath(),
+      ).writeAsStringSync(writePage(read(copyPath()).replaceNode(conflicted)));
+      await nb.checkFile(copyPath()).timeout(within); // the page takes it in
+      final c = nb.current!;
+      expect((c.page.node(baseBox.id)! as BoxRecord).isConflicted, isTrue);
+      c.resolveKeepMine(baseBox.id); // not saved yet
+      // The original comes back with A and without the record.
+      final a = noteBox(
+        'only in the original',
+        at: const Bounds(400, 10, 200, 40),
+      );
+      File(originalPath()).writeAsStringSync(
+        writePage(read(copyPath()).replaceNode(baseBox).insertNode(a)),
+      );
+      await nb.checkFile(copyPath()).timeout(within);
+      expect(nb.pageFileForTest(id), originalPath());
+      expect(
+        (read(originalPath()).node(baseBox.id)! as BoxRecord).isConflicted,
+        isFalse,
+      );
+      await nb.createPage();
+      await nb.recheckConsumedCopiesForTest();
+      final disk = read(originalPath());
+      expect(
+        (disk.node(baseBox.id)! as BoxRecord).isConflicted,
+        isFalse,
+        reason: 'the user settled it',
+      );
+      expect(disk.node(a.id), isNotNull);
+      expect(await entries(), isEmpty);
+    });
+  });
+
   group('seams', () {
     test('an edit typed between the read-back and the re-point is kept and saved into the original', () async {
       await start();

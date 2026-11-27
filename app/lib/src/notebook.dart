@@ -14670,7 +14670,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // Retires the conflict copy [copyPath], whose text [consumed] (holding
   // [copy]) a verified merge holds: kept in recovery, then deleted only if it
   // still holds [consumed]. Throws [_SourceChanged] when it changed.
-  Future<void> _keepAndDeleteCopy(PageStore st, String copyPath, NotedPage copy, int time, String consumed) async {
+  // [screen], when given, is the page as the user has it now: what it lacks or
+  // settled of [copy] is the user's own (deleted or settled before the mark
+  // existed), and the mark's re-check leaves it out.
+  Future<void> _keepAndDeleteCopy(PageStore st, String copyPath, NotedPage copy, int time, String consumed, {NotedPage Function()? screen}) async {
     // Kept before it is deleted: a sync client may put the pre-merge original
     // back after the check above, and then the copy's content would be in no
     // file. Also when the merge wrote nothing (it may have been written before
@@ -14689,6 +14692,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       mark = await _keepConsumedCopy(st, copy, time);
       _consumedForCopy[ck] = (text: consumed, mark: mark);
     }
+    if (screen != null) _noteOwnEdits(copy.id, copy, screen());
     final DeleteResult deleted;
     try {
       // Deleted only if it still holds exactly the text that was merged, checked
@@ -14880,7 +14884,21 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       _rebuildTree();
       // 9. Retire the copy, whose content the original holds now.
       try {
-        await _keepAndDeleteCopy(st, copyPath, copy, copyTime, copyText);
+        // The copy is the page as last saved: a box the user deleted, or an
+        // issue they settled, since then (before this mark existed) is theirs,
+        // and its re-check must not bring it back. The header is the
+        // snapshot's (the merge may have made the AI access stricter).
+        await _keepAndDeleteCopy(
+          st,
+          copyPath,
+          copy,
+          copyTime,
+          copyText,
+          screen: () {
+            final now = identical(_current, c) ? c.page : snapshot;
+            return NotedPage.fromParts(now.top, snapshot.meta, now.nodes);
+          },
+        );
         _passingCopies.remove(copyKey);
       } on Object catch (e) {
         debugPrint('Retiring $copyPath after its merge failed, keeping it: $e');
