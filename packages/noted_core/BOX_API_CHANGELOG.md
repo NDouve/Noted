@@ -15,6 +15,8 @@ Versions are listed newest first.
 - On `BoxContext`: `bool get offscreen` (default false in `BoxBinding.offscreen`): the view is drawn only to be rasterised for an export, so a module keeps it out of its live-editor registries (the note and AI modules keep it out of `_live`). **Implementers of `BoxContext` must add the getter** (a module that wraps another box's context forwards it).
 - Additive, and no module has to use it. Under 0.x `canHost` matches the exact version, so every 0.17 module must be rebuilt for 0.18. `BoxCodec` is unchanged, so the MCP server is unaffected. Decided by the PM under delegated authority; run 2026-11-25-01, task 6 (design t4, build steps 1 and 2).
 
+Host-only (not the Box API), run 2026-11-26-01, task 3 (a revision match is the same version only with the same content): `sameBoxVersion(a, b)` is exported from the merge library (`conflict_copy.dart`); equal `rev` counts only with equal content (`typeId`, `dataVersion`, `data` text, `snapshotText`), and a box without a `rev` is matched on content alone. A merge helper, no module-facing change, no version bump.
+
 Host-only (not the Box API), run 2026-11-25-01, task 6: the canvas command `canvas.exportBox` and `PageCanvas.onExportBox` (the command exists only while the handler is set), `PageCanvasState.captureExportTarget` and `ExportTarget`, and the raster helpers `exportRasterSize`, `decodeWithinCap`, `decodeToRgba`, `imageToPng` and `isPngBytes` (the caps: 4,096 px a side, 16 MP; 100 MP refused). In noted_core, `noteToMarkdown(export: true)`, `noteToHtml`, `exportLinkTarget` and `markdownLinkTarget`.
 
 ## 0.17 — 2026-11-26
