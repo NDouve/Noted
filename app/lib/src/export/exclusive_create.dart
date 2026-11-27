@@ -106,6 +106,70 @@ Future<ExclusiveOutcome> createExclusive(
   return ExclusiveOutcome.created;
 }
 
+/// [createExclusive] for content in the file [source], read in chunks, so it
+/// is never held whole (a binder `.zip`). A partial file is removed only
+/// through [deleteFileIfMatches] with the identity of the bytes written.
+Future<ExclusiveOutcome> createExclusiveFromFile(
+  String path,
+  String source, {
+  ExclusiveOpener? open,
+  bool sandboxed = false,
+}) async {
+  final file = (open ?? _openPosix)(path);
+  if (file == null) return ExclusiveOutcome.taken;
+  var written = 0;
+  try {
+    final src = File(source).openSync();
+    try {
+      try {
+        final buffer = Uint8List(64 * 1024);
+        while (true) {
+          final n = src.readIntoSync(buffer);
+          if (n <= 0) break;
+          final chunk = Uint8List.sublistView(buffer, 0, n);
+          var at = 0;
+          while (at < n) {
+            final w = file.write(chunk, at);
+            if (w <= 0) throw FileSystemException('Nothing was written', path);
+            at += w;
+            written += w;
+          }
+        }
+        file.sync();
+      } finally {
+        try {
+          file.close();
+        } on Object {
+          // As in createExclusive.
+        }
+      }
+    } finally {
+      src.closeSync();
+    }
+  } on Object catch (e) {
+    final name = path.split(RegExp(r'[\\/]')).last;
+    if (sandboxed) {
+      throw ExclusiveWriteFailed('$name may be incomplete.', path, left: true);
+    }
+    var left = true;
+    try {
+      // The identity of the bytes written: the source's first [written]
+      // bytes, hashed as a stream of chunks, never held whole.
+      final head = ContentIdentity(written, await contentHashOfStream(File(source).openRead(0, written)));
+      final r = await deleteFileIfMatches(path, identity: head);
+      left = !r.deleted && r.outcome != DeleteOutcome.absent;
+    } on Object {
+      left = true;
+    }
+    throw ExclusiveWriteFailed(
+      left ? '$name may be incomplete.' : (e is FileSystemException ? e.message : 'The file could not be written.'),
+      path,
+      left: left,
+    );
+  }
+  return ExclusiveOutcome.created;
+}
+
 // --- POSIX -----------------------------------------------------------------
 
 // `open` is variadic: on Apple arm64 the mode is passed as a vararg.

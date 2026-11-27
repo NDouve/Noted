@@ -1993,6 +1993,95 @@ void main() {
 
     BoxRecord diskBox(String boxId) => onDisk(id).node(boxId)! as BoxRecord;
 
+    // The box as another editor leaves it: [b]'s rev and every other field, the
+    // content replaced (commitBox and withContent would issue a new rev).
+    BoxRecord sameRevOther(BoxRecord b, String text) {
+      final o = noteBox(text);
+      return BoxRecord.create(
+        id: b.id,
+        typeId: o.typeId,
+        dataVersion: o.dataVersion,
+        bounds: b.bounds,
+        data: o.data!,
+        snapshotText: o.snapshotText,
+        rev: b.rev!,
+      );
+    }
+
+    // The merged file with the box put back at the copy's rev and other content
+    // (a sync client, or another JSON Canvas editor, changed it).
+    void putBackOther() {
+      final merged = readPage(File(pathOf(id)).readAsStringSync());
+      File(pathOf(id)).writeAsStringSync(writePage(merged.replaceNode(sameRevOther(box, 'changed outside'))));
+    }
+
+    test('(d4) the box put back at the copy\'s rev with other content: not retired, the redo records the copy\'s version', () async {
+      await start();
+      await withCopy();
+      await nb.checkFile(copy);
+      expect(ids(), {box.id, extra.id});
+      putBackOther();
+      await recheck();
+      expect(await entries(), hasLength(1), reason: 'the copy\'s version of the box is not in the file');
+      final x = onDisk(id).node(box.id)! as BoxRecord;
+      expect(x.rev, box.rev);
+      expect(x.conflicts.single.node, readPage(before).node(box.id)!.toRaw(), reason: 'the copy\'s version is recorded');
+      await recheck();
+      expect(await entries(), isEmpty);
+      expect(nb.consumedCopiesForTest, isEmpty);
+      expect((onDisk(id).node(box.id)! as BoxRecord).conflicts, hasLength(1));
+    });
+
+    test('(d4k) Keep mine on that record settles it: the entry retires, no park', () async {
+      await start();
+      await withCopy();
+      await nb.checkFile(copy);
+      putBackOther();
+      await recheck();
+      expect((onDisk(id).node(box.id)! as BoxRecord).conflicts, hasLength(1));
+      await settleIssue('conflict', box.id);
+      await recheck();
+      expect(await entries(), isEmpty);
+      expect(nb.consumedCopiesForTest.values.any((p) => p), isFalse, reason: 'not parked');
+      expect(nb.consumedCopiesForTest, isEmpty);
+      expect((onDisk(id).node(box.id)! as BoxRecord).conflicts, isEmpty);
+      expect(ids(), {box.id, extra.id});
+    });
+
+    test('(d4m) Keep mine settles the record though another box holds the same content under its own rev', () async {
+      await start();
+      await withCopy();
+      await nb.checkFile(copy);
+      putBackOther();
+      // An empty-note-like twin: the recorded version's content, another rev.
+      final twin = noteBox('base', at: const Bounds(600, 300, 200, 40));
+      expect(twin.rev, isNot(box.rev));
+      File(pathOf(id)).writeAsStringSync(writePage(onDisk(id).insertNode(twin)));
+      await recheck();
+      expect((onDisk(id).node(box.id)! as BoxRecord).conflicts, hasLength(1));
+      await settleIssue('conflict', box.id);
+      await recheck();
+      expect(await entries(), isEmpty);
+      expect(nb.consumedCopiesForTest, isEmpty, reason: 'not parked');
+      expect((onDisk(id).node(box.id)! as BoxRecord).conflicts, isEmpty);
+    });
+
+    test('(d5) the same put-back, the app closed before the re-check: the next start keeps the entry until the file records it', () async {
+      await start();
+      await withCopy();
+      await nb.checkFile(copy);
+      putBackOther();
+      await restart();
+      await recheck();
+      await until(() async {
+        final conflicts = (onDisk(id).node(box.id)! as BoxRecord).conflicts;
+        return conflicts.any((k) => k.node == readPage(before).node(box.id)!.toRaw());
+      }, 'the copy\'s version to be recorded');
+      await recheck();
+      expect(await entries(), isEmpty);
+      expect((onDisk(id).node(box.id)! as BoxRecord).conflicts.single.node, readPage(before).node(box.id)!.toRaw());
+    });
+
     for (final what in ['conflict', 'marker']) {
       final issue = what == 'conflict' ? 'a recorded conflict resolved' : 'a landed marker dismissed';
       test('(f) $issue inside the window, no revert: the entry retires and the issue stays settled', () async {

@@ -602,11 +602,11 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0053 — Cloud conflict-copy files (OneDrive)
 - **Date:** 2026-10-25
-- **Status:** Active; extended by 0120 (landed boxes); deletion of a copy amended by 0124 and 0183; verification amended by 0132; other providers amended by 0163; conflict-copy names amended by 0171; the merged header's AI access amended by 0183
+- **Status:** Active; extended by 0120 (landed boxes); deletion of a copy amended by 0124 and 0183; verification amended by 0132; other providers amended by 0163; conflict-copy names amended by 0171; the merged header's AI access amended by 0183; "same `rev`: the same version" amended by 0199 (also the same content)
 - **Decision:**
   - **Detection:** a file `<stem>-<suffix>.canvas` is a conflict copy when `<stem>.canvas` exists in the same folder and both have the same page id. OneDrive appends `-<COMPUTERNAME>`, then `-<COMPUTERNAME>-<n>`. This naming is *unverified*, so a broader suffix pattern is accepted. *(Amended by 0171: the recognised suffixes now also include Drive for desktop ` (n)`, Nextcloud ` (conflicted copy …)`, older ownCloud `_conflict-…` and Finder-style ` n`, and every combination of suffixes is tried, shortest stem first. A chosen file (0137, 0149) is never a copy and is preferred as the original.)*
   - **Merge**, box by box into the original. There is no common base, so revisions decide:
-    - same `rev`: the same version
+    - same `rev`: the same version *(amended by 0199: and the same content)*
     - the copy's `baseRev` is the original's `rev`: take the copy
     - the reverse: keep the original
     - otherwise: keep the original and record the copy in `conflicts` (0051).
@@ -2589,7 +2589,7 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 
 ## 0183 — A consumed conflict copy is retired only after a re-check; a merge keeps the stricter AI access
 - **Date:** 2026-11-16
-- **Status:** Active (the build team: the AI-access rule by the maintainer's PM chat, 2026-11-16; the retirement by the PM, run 2026-11-16-01, from the reviewed note `2026-11-16-01-copy-retire`); amends 0053, 0124 and 0171; unparking a parked retirement amended by 0187
+- **Status:** Active (the build team: the AI-access rule by the maintainer's PM chat, 2026-11-16; the retirement by the PM, run 2026-11-16-01, from the reviewed note `2026-11-16-01-copy-retire`); amends 0053, 0124 and 0171; unparking a parked retirement amended by 0187; "by rev" amended by 0199 (the rev and the same content)
 - **Decision:**
   - **Retiring a merged copy.** After a conflict copy is merged and verified, the copy is kept as a recovery entry (fresh slot, no base, read back) before it is deleted through the checked delete. The entry is retired only when a later read of the page, under the folder lock, still holds every box of the copy (by rev, a box edited from it, or a recorded conflict version, with the copy's recorded conflicts and landed marker) and AI access at least as strict as the copy's, or as the user's own choice since the merge. Boxes this app deleted, conflicts the user resolved by keeping their own version, and landed markers they dismissed, since the merge are left out. Otherwise the merge is redone from the entry, three rounds, then listed, with one more round after the next change to the file. The re-check waits while the page is open, while a delete can still be undone, and until the copy's own delete has returned; "listed nowhere" is a read of the page's path, not the in-memory listing. A notebook without a recovery folder never retires a copy.
   - **AI access in a merge.** When a conflict copy or a same-id file is merged into its original, the merged header keeps the original's fields except AI access, which is the stricter of the two: Guarded over Privileged over Open; an absent field ranks lowest below the top of the chain and as Guarded at the top; unknown values read as Guarded; a tie keeps the original's value.
@@ -2781,6 +2781,22 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
   - **A binder disabled because its file was missing** is read again at the folder check once its file is on disk. A binder removed or replaced while it is being reopened stays as it is, and pages read for a binder removed meanwhile are forgotten.
 - **Rationale:** a binder whose file came back stayed disabled until a relaunch; a hung test gave no name or step; one hung seed failed every seed after it.
 - **Alternatives considered:** per-test timeouts only (they don't say where a test stopped).
+
+## 0199 — A revision match is the same version only with the same content
+- **Date:** 2026-11-26
+- **Status:** Active (the build team (PM), run 2026-11-26-01, from the reviewed note `2026-11-26-01-t3-revision-content`); amends 0053 and 0183
+- **Decision:**
+  - Two boxes with a `rev` are the same version only when the rev **and** the content are equal. Content means the type, the data version, the raw text of `data` and the snapshot text, compared byte for byte. Position, size, `conflicts`, the landed marker, device and time don't count. A box without a `rev` is matched on content alone.
+  - The rule applies wherever a version decides a conflict-copy merge, a retirement, a settled record or a recovery delete:
+    - the conflict-copy merge and its verification;
+    - the consumed-copy re-check (0183);
+    - lost-edit recording and landed repair;
+    - *Keep mine* settling (0120).
+  - The three-way merge (0051, `page_merge.dart`) is unchanged: it still treats an equal `rev` as the same version.
+  - In a conflict-copy merge, an equal `rev` with other content records the copy's version in `conflicts`, like any other conflict.
+  - **Known limit:** resolving such a conflict keeps rev R on both sides, so a later copy between the same two versions can raise it again.
+- **Rationale:** another JSON Canvas editor that duplicates a box, or a sync client putting back an older file, keeps a box's revision with other content. Matching on revision alone could retire the only copy of a kept version.
+- **Alternatives considered:** leaving it (rare, but a silent loss); comparing whole raw nodes (geometry would stop copies retiring after a move).
 
 ---
 

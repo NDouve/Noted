@@ -258,6 +258,16 @@
 // 39. No publisher registered (`useRenamePublishOnAndroid` registers nothing):
 //     all 9 fail at `start`, where the first page can't be published.
 //
+// Row 40 (the design note's "row 38", renumbered: 38 and 39 were taken) is for a
+// revision match that is the same version only with the same content (run
+// 2026-11-26-01, task 3): `conflict:revertedSameRev` and
+// `conflict:revertedSameRevRestart` (the put-back box has the copy's rev and other
+// content; drawn by `_vrng`, from `_opCopy` and `_revertedCopyStep`).
+//
+// 40. `sameBoxVersion` by revision alone (the content test removed): the seeds
+//     that draw either variant fail ("box ... should record the other version"),
+//     and only those: of the first 16, seeds 1, 2, 4, 5, 7, 8, 10, 11, 13, 15, 16.
+//
 // Wait for watchers: none is used. The notebook runs with `watchFiles` off,
 // and the steps call `checkFile` and `checkFolders` themselves, the way the
 // watcher would, so a step is over when its calls return. Folder renames and
@@ -639,6 +649,13 @@ Map<String, _BoxVal> _boxesOf(NotedPage page, String where, {Map<String, String>
     out[n.id] = _val(n);
   }
   expect(opaque, 1, reason: '$where: the unregistered box is missing or repeated');
+  // The other direction: a box the page still has and the model expects conflicted
+  // must be (a dropped record passes the check above).
+  for (final e in conflicts.entries) {
+    if (!out.containsKey(e.key)) continue;
+    final n = page.node(e.key)! as BoxRecord;
+    expect(n.isConflicted, isTrue, reason: '$where: box ${e.key} should record the other version (${e.value})');
+  }
   return out;
 }
 
@@ -852,6 +869,7 @@ class _Run {
       final id = m.boxes.keys.elementAt(rng.nextInt(m.boxes.length));
       c.delete(id);
       m.boxes.remove(id);
+      m.conflicts.remove(id);
     }
   }
 
@@ -2225,6 +2243,7 @@ class _Run {
     // the other steps stay the ones they were.
     if (variant == 'plain' && _crng.nextBool()) {
       variant = _crng.nextBool() ? 'revertedAfterVerify' : 'revertedRestart';
+      if (_vrng.nextInt(3) == 0) variant = variant == 'revertedRestart' ? 'revertedSameRevRestart' : 'revertedSameRev';
     }
     trace.add('conflict copy of ${_short(id)} in ${m.loc}: $variant');
     _kind = 'conflict:$variant';
@@ -2295,6 +2314,9 @@ class _Run {
       case 'revertedAfterVerify':
       case 'revertedRestart':
         await _copyReverted(id, path, disk, z, restart: variant == 'revertedRestart');
+      case 'revertedSameRev':
+      case 'revertedSameRevRestart':
+        await _copyReverted(id, path, disk, z, restart: variant == 'revertedSameRevRestart', sameRev: true);
     }
   }
 
@@ -2303,18 +2325,30 @@ class _Run {
   // file it fetched before. The copy is deleted all the same; recovery keeps
   // it, and its merge is done again by the re-check, or, with [restart] (no
   // re-check), by the replay at the next start. The page is closed.
-  Future<void> _copyReverted(String id, String path, NotedPage disk, BoxRecord z, {required bool restart}) async {
+  Future<void> _copyReverted(
+    String id,
+    String path,
+    NotedPage disk,
+    BoxRecord z,
+    {required bool restart, bool sameRev = false}
+  ) async {
+    // [sameRev]: what is put back holds [z] at its rev with other content (a sync
+    // client, or another JSON Canvas editor, changed it), built from raw fields:
+    // commitBox would issue a new rev. The copy's version is then recorded in
+    // it, and the box stays this side's.
+    final back = sameRev ? _sameRevOther(z) : null;
+    final putBack = back == null ? disk : disk.insertNode(back);
     var fired = false;
     nb.syncHook = (point, p) async {
       if (point != 'copy-merged' || fired) return;
       fired = true;
-      _externalWriteSync(id, disk);
+      _externalWriteSync(id, putBack);
     };
     await nb.checkFile(path);
     nb.syncHook = null;
     expect(fired, isTrue);
     expect(File(path).existsSync(), isFalse, reason: 'the copy is deleted');
-    expect(_disk(id).node(z.id), isNull, reason: 'the old file is back');
+    if (back == null) expect(_disk(id).node(z.id), isNull, reason: 'the old file is back');
     if (restart) {
       final kind = _kind;
       await _opRestart();
@@ -2323,6 +2357,25 @@ class _Run {
       await nb.recheckConsumedCopiesForTest();
       expect(_disk(id).node(z.id), isNotNull, reason: 'the re-check merged the kept copy again');
     }
+    if (back != null) {
+      final m = model[id]!;
+      m.boxes[z.id] = _val(back);
+      m.conflicts[z.id] = _textOf(z);
+    }
+  }
+
+  // [z] at its rev with other content.
+  BoxRecord _sameRevOther(BoxRecord z) {
+    final o = _newBox(_text('changed'));
+    return BoxRecord.create(
+      id: z.id,
+      typeId: o.typeId,
+      dataVersion: o.dataVersion,
+      bounds: z.bounds,
+      data: o.data!,
+      snapshotText: o.snapshotText,
+      rev: z.rev!,
+    );
   }
 
   /// The step `conflict:reverted*` after step [n]: a conflict copy of a page
@@ -2334,7 +2387,8 @@ class _Run {
     final id = ids[_crng.nextInt(ids.length)];
     final m = model[id]!;
     final restart = _crng.nextBool();
-    final kind = 'conflict:${restart ? 'revertedRestart' : 'revertedAfterVerify'}';
+    final sameRev = _vrng.nextInt(3) == 0;
+    final kind = 'conflict:${sameRev ? restart ? 'revertedSameRevRestart' : 'revertedSameRev' : restart ? 'revertedRestart' : 'revertedAfterVerify'}';
     trace.add('$kind on ${_short(id)} in ${m.loc}');
     _kind = kind;
     await nb.open(ids.firstWhere((i) => i != id));
@@ -2343,7 +2397,7 @@ class _Run {
     final path = '${dirs[m.loc]!.path}$sep$id-DESKTOP-${++_copyCounter}.canvas';
     File(path).writeAsStringSync(writePage(disk.insertNode(z)));
     m.boxes[z.id] = _val(z);
-    await _copyReverted(id, path, disk, z, restart: restart);
+    await _copyReverted(id, path, disk, z, restart: restart, sameRev: sameRev);
     trace.add('  ($kind done)');
     await _settle();
     await verify('step $n ($kind)');
@@ -3008,6 +3062,7 @@ class _Run {
   late final Random _rrng = Random(seed * 19 + 5); // which failed deletes are followed by a kill (_opDelete)
   late final Random _kcrng = Random(seed * 23 + 7); // which moves take the copy path, and how (_opMove)
   late final Random _crng = Random(seed * 23 + 29); // which conflict copies get the old file put back (_opCopy)
+  late final Random _vrng = Random(seed * 59 + 31); // which put-back copies change the box under its rev (_opCopy, _revertedCopyStep)
   late final Random _xrng = Random(seed * 53 + 29); // the scripted move and delete kinds (_xStep)
   final Set<(String, String)> _extra = {}; // other names the scripted kinds leave in a place (place, name)
   int _xCounter = 0;
@@ -5304,7 +5359,8 @@ const _expectedKinds = {
   'edit:failOnce', 'edit:failAlways', //
   'external', 'rename:plain', 'rename:syncAtPublish', 'rename:syncBeforeWrite',
   'conflict:plain', 'conflict:replacedMidMerge', 'conflict:originalChanged',
-  'conflict:stealPublish', 'conflict:scan', 'conflict:revertedAfterVerify', 'conflict:revertedRestart', //
+  'conflict:stealPublish', 'conflict:scan', 'conflict:revertedAfterVerify', 'conflict:revertedRestart',
+  'conflict:revertedSameRev', 'conflict:revertedSameRevRestart', //
   'move:plain', 'move:pendingEdit', 'move:failDestination',
   'move:syncAtSource', //
   'move:copyKeepsOriginal', 'move:copyCrash', 'move:deleteOriginalCopyChanged', 'move:deleteOriginalCrash', //

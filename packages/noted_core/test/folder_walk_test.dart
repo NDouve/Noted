@@ -14,7 +14,7 @@ import 'package:noted_core/noted_core.dart';
 import 'package:noted_core/src/storage/dataless.dart' show debugDatalessPaths, debugMarkDataless;
 import 'package:noted_core/src/storage/exclusive_move.dart'
     show debugMoveVolumeOf, debugNoReplaceErrno, debugRenameDelay;
-import 'package:noted_core/src/storage/folder_walk.dart' show debugAppleMode;
+import 'package:noted_core/src/storage/folder_walk.dart' show debugAppleMode, debugListDir;
 
 import 'support/coordination_support.dart';
 
@@ -29,6 +29,7 @@ void suite() {
   setUp(() async => dir = await Directory.systemTemp.createTemp('noted_walk'));
   tearDown(() async {
     debugAppleMode = null;
+    debugListDir = null;
     debugDatalessPaths = null;
     debugRenameDelay = null;
     debugMoveVolumeOf = null;
@@ -118,6 +119,58 @@ void suite() {
       );
       await Future<void>.delayed(Duration.zero);
       expect(asked, [p('src/c.bin')]);
+    });
+
+    test('a subfolder whose listing fails counts as not downloaded, and the move is refused', () async {
+      makeFolder();
+      debugAppleMode = true;
+      debugListDir = (d) {
+        if (d == p('src/sub')) throw FileSystemException('denied', d, const OSError('denied', 5));
+        return Directory(d).listSync(followLinks: false);
+      };
+      final w = folderWalk(p('src'));
+      expect(w.hasNotDownloaded, isTrue);
+      expect(w.notDownloaded, [p('src/sub')]);
+      final asked = <String>[];
+      expect(await moveExclusive(p('src'), p('dst'), ask: record(asked)), MoveOutcome.busy);
+      expect(Directory(p('src')).existsSync(), isTrue);
+      expect(Directory(p('dst')).existsSync(), isFalse);
+    });
+
+    test('a folder that vanished during the walk is not a failure', () {
+      makeFolder();
+      debugListDir = (d) => throw FileSystemException('gone', d, const OSError('gone', 2));
+      Directory(p('src')).deleteSync(recursive: true);
+      final w = folderWalk(p('src'));
+      expect(w.hasNotDownloaded, isFalse);
+      expect(w.unreadable, isEmpty);
+    });
+
+    test('an error that is not "gone" counts even when the folder looks absent', () {
+      makeFolder();
+      debugListDir = (d) => throw FileSystemException('io', d, const OSError('io', 5));
+      Directory(p('src')).deleteSync(recursive: true);
+      final w = folderWalk(p('src'));
+      expect(w.notDownloaded, [p('src')]);
+      expect(w.unreadable, [p('src')]);
+    });
+
+    test('the top folder whose own listing fails is not downloaded, and the move is busy', () async {
+      makeFolder();
+      debugAppleMode = true;
+      debugListDir = (d) => d == p('src') ? throw FileSystemException('io', d, const OSError('io', 5)) : Directory(d).listSync();
+      expect(folderWalk(p('src')).notDownloaded, [p('src')]);
+      expect(await moveExclusive(p('src'), p('dst')), MoveOutcome.busy);
+      expect(Directory(p('dst')).existsSync(), isFalse);
+    });
+
+    test('off Apple a failed listing is counted too, as unreadable', () {
+      makeFolder();
+      debugAppleMode = false;
+      debugListDir = (d) => d == p('src/sub') ? throw FileSystemException('io', d, const OSError('io', 5)) : Directory(d).listSync();
+      final w = folderWalk(p('src'));
+      expect(w.notDownloaded, [p('src/sub')]);
+      expect(w.unreadable, [p('src/sub')]);
     });
 
     test('a walk that was passed in is used', () async {

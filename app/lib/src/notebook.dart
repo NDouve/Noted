@@ -12,6 +12,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
+// ignore: implementation_imports -- the hidden test seam of the folder walk
+import 'package:noted_core/src/storage/folder_walk.dart' show debugListDir;
 
 import 'ai/ai_access_service.dart';
 import 'ai/ai_link_authority.dart';
@@ -1019,6 +1021,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   void _logHoldError(Object e) => debugPrint('Starting the work of a binder hold failed: $e');
 
   Future<T> _lockRunRaw<T>(Directory folder, Future<T> Function() job) {
+    _assertNoZipJob('a folder job');
     final mark = Zone.current[_userActionKey];
     if (mark is! _UserAction || !mark.active || _disposed) return folderLocks.run(folder, job);
     var counted = false;
@@ -1844,7 +1847,9 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   /// (`candidate-read` just before a candidate's binder file is read: throw a
   /// [FileSystemException] to make the read fail; `job` as an add job starts,
   /// `recheck` after its rechecks and before the folder is read; `opened`
-  /// after the folder was scanned and before the binder is listed; `adopted`
+  /// after the folder was scanned and before the binder is listed; `listed`
+  /// after an added binder's list was saved, before its pages are reconciled,
+  /// its copies merged and its recovery replayed; `adopted`
   /// after the binder file of a listed folder was taken over; `root-list` before
   /// a root is listed (throw to make that fail); `claimed`
   /// in a template's creation after its binder file was written; `settings-read`
@@ -3775,18 +3780,28 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   // The not-downloaded files (by path) in the assets folders [dirs], by name and
   // metadata only: nothing is read (t2a).
-  List<String> _notDownloadedIn(Iterable<Directory> dirs) => [
-    for (final d in dirs)
-      if (d.existsSync()) ...folderWalk(d.path).notDownloaded,
-  ];
+  ({List<String> held, Set<String> unreadable}) _notDownloadedIn(Iterable<Directory> dirs) {
+    final held = <String>[];
+    final unreadable = <String>{};
+    for (final d in dirs) {
+      if (!d.existsSync()) continue;
+      final walk = folderWalk(d.path);
+      held.addAll(walk.notDownloaded);
+      unreadable.addAll(walk.unreadable);
+    }
+    return (held: held, unreadable: unreadable);
+  }
 
   /// The refusal of a copy whose source holds files that are not downloaded:
   /// each is asked for, and the text says what to do. [page] and [place] (a
   /// move's page and target) give the move's own text. Without a requester
   /// (nothing can be asked for) the files are only placeholders.
-  NotebookException _downloadRefusal(Iterable<String> paths, {String? page, String? place}) {
+  NotebookException _downloadRefusal(Iterable<String> paths, {Set<String> unreadable = const {}, String? page, String? place}) {
+    if (paths.isNotEmpty && paths.every(unreadable.contains)) {
+      return const NotebookException("A folder can't be read, so it was not copied.");
+    }
     for (final p in paths) {
-      askSafely(p, askDownload);
+      if (!unreadable.contains(p)) askSafely(p, askDownload);
     }
     if (askDownload == null) {
       return NotebookException(
@@ -4450,17 +4465,22 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // whole delete (nothing was moved, so nothing is put back): the files are
     // asked for, and the user deletes again once they are here.
     if (appleMode()) {
-      var waiting = false;
+      var waiting = false, unreadable = false;
       for (var i = 0; i < ids.length; i++) {
         final dir = _assetsDir(locs[i], ids[i]);
         if (!dir.existsSync()) continue;
         final walk = folderWalk(dir.path);
         for (final p in walk.notDownloaded) {
+          if (walk.unreadable.contains(p)) {
+            unreadable = true;
+            continue;
+          }
           waiting = true;
           askSafely(p, askDownload);
         }
       }
       if (waiting) throw const NotebookException('Still downloading. Delete again once the files are here.');
+      if (unreadable) throw const NotebookException("A folder of this page can't be read.");
     }
     final previous = _lastDeleted;
     if (previous != null) discardDeleted(previous);
@@ -6032,9 +6052,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     Future<void> walk(Directory s, Directory d) async {
       final List<FileSystemEntity> entries;
       try {
-        entries = s.listSync(followLinks: false);
+        entries = debugListDir?.call(s.path) ?? s.listSync(followLinks: false);
       } on FileSystemException {
         left.add(s.path);
+        if (apple) downloading?.add(s.path); // unreadable: it may hold a file not downloaded, as folderWalk counts it
         return;
       }
       for (final e in entries) {
@@ -6821,8 +6842,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // Before anything is written, each page's images and files are listed by
     // name: a file that is not downloaded is asked for, and refuses the copy.
     for (final p in ids) {
-      final held = _notDownloadedIn([_assetsDir(fromLoc, p)]);
-      if (held.isNotEmpty) throw _downloadRefusal(held, page: nameOf(p), place: _placeName(toLoc));
+      final (:held, :unreadable) = _notDownloadedIn([_assetsDir(fromLoc, p)]);
+      if (held.isNotEmpty) throw _downloadRefusal(held, unreadable: unreadable, page: nameOf(p), place: _placeName(toLoc));
     }
     // Only the moved page's parent and order change; its subpages keep theirs.
     final moved = [
@@ -7625,6 +7646,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
   // the folder checks do. Null if the notebook was disposed first.
   Future<T?> _queued<T>(Future<T> Function() body, {bool nested = false}) {
     _assertNotInCheckJob('a job', nested);
+    _assertNoZipJob('a queued check');
     final done = Completer<T?>();
     final job = _checking.then((_) => _asCheckJob(() async {
       try {
@@ -7689,6 +7711,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       _rebuildTree();
       _syncWatchers();
       await _saveSettings();
+      await _binderSeam('listed', path);
       if (!await _reconcileAdded(path, found: found, expectId: expectId)) {
         return none();
       }
@@ -7795,6 +7818,98 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     } finally {
       // (sweeping stays off for the whole found add: see _listBinder)
     }
+  }
+
+  // Binder .zip (design t6) ----------------------------------------------------
+
+  static const Object _zipJobKey = #notedBinderZipJob;
+
+  // A binder .zip lock job holds one file's copy or one metadata pass: never a
+  // flush, a save chain wait, a queued check or another folder job (t6 §3.4).
+  void _assertNoZipJob(String what) {
+    assert(Zone.current[_zipJobKey] == null, '$what inside a binder .zip lock job');
+  }
+
+  /// The kind of binder .zip lock job running in the current zone (`read` or
+  /// `metadata`), or null outside one.
+  static String? get binderZipJobKind => Zone.current[_zipJobKey] as String?;
+
+  /// Runs [job] in its own gated turn at listed binder folder [path] (t6 §3.3,
+  /// §3.4): a held binder (G2) refuses it with a [NotebookException]. A
+  /// [metadataOnly] job only lists and stamps; a read job copies one of
+  /// Noted's own files. Neither may flush, wait for the save chain or a queued
+  /// check, or start another folder job (asserted).
+  Future<T> binderZipJob<T>(String path, Future<T> Function() job, {required bool metadataOnly}) {
+    _assertNoZipJob('a binder .zip job');
+    if (_sectionAt(path) == null) {
+      return Future.error(const NotebookException('That binder is no longer listed.'));
+    }
+    final kind = metadataOnly ? 'metadata' : 'read';
+    return _lockRun(Directory(path), () => runZoned(job, zoneValues: {_zipJobKey: kind}));
+  }
+
+  /// Whether a page of binder [path] has edits that aren't on disk: a save
+  /// still waiting for the autosave timer, save trouble on the open page (its
+  /// edits held in the editor or recovery), or kept edits in recovery that
+  /// haven't landed. Memory only: no file is read, so a binder .zip check job
+  /// may ask it.
+  bool binderHasUnsavedEdits(String path) {
+    final key = _key(_normalizePath(path));
+    bool inBinder(String? id) {
+      final loc = id == null ? null : _loc[id];
+      return loc != null && loc != _standalone && _key(loc) == key;
+    }
+
+    if (inBinder(_pendingSave?.id)) return true;
+    if (_trouble.kind != TroubleKind.saved && inBinder(_trouble.pageId)) return true;
+    // The binder file's own edits: cover changes not written yet ("Not saved
+    // yet"), and queued settings.
+    final listed = _binders.keys.where((p) => _key(p) == key).firstOrNull;
+    if (listed != null && (coverPendingFor(listed).isNotEmpty || (_binders[listed]?.pending.isNotEmpty ?? false))) {
+      return true;
+    }
+    final rec = _recovery;
+    if (rec != null) {
+      for (final e in rec.indexEntries) {
+        if (_key(e.folder) == key && isKeptEdit(e) && !rec.isLanded(e.gen)) return true;
+      }
+    }
+    return false;
+  }
+
+  /// Takes what the open cover of binder [path] has typed into its pending
+  /// changes, as hiding the cover does, so a share's flush and check see it.
+  void binderZipTakeCoverTyping(String path) {
+    if (_coverTypingPath != null && _key(_coverTypingPath!) == _key(_normalizePath(path))) _takeCoverTyping();
+  }
+
+  /// [_refuseWhileHeld] for the binder .zip commands, before any picker.
+  void binderZipRefuseWhileHeld() => _refuseWhileHeld();
+
+  /// Why binders can't be opened into the folder [parent] (pull-only, or an
+  /// iCloud folder not tested yet: the add path's messages), or null.
+  String? binderZipParentRefusal(String parent) {
+    final p = _normalizePath(parent);
+    if (_pullOnly(p)) return pullOnlyMessageFor(p);
+    if (!_mayTouch(p)) return _untestedMessage(p);
+    return null;
+  }
+
+  /// Whether [path] is the default binder folder itself.
+  bool isDefaultBinderFolder(String path) => _key(_normalizePath(path)) == _key(defaultBinderFolderPath);
+
+  /// The title of the listed binder whose recorded id is [binderId], or null.
+  String? listedBinderTitle(String binderId) {
+    for (final b in _binders.values) {
+      if (_binderIds[_key(b.path)] == binderId || b.binder?.id == binderId) return b.title;
+    }
+    return null;
+  }
+
+  /// Records a bookmark for a folder this device just made (macOS), before
+  /// the binder in it is added, as [createBinder] does.
+  Future<void> binderZipFolderMade(String path) async {
+    await icloud?.bookmarkCreated(path);
   }
 
   // Standalone folders ---------------------------------------------------------
@@ -8091,8 +8206,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // for, and nothing is copied); the `saveAssets` gate; the copy; then the
     // template file, at its own `saveTemplate` gate.
     final source = _assetsDir(loc, pageId);
-    final held = _notDownloadedIn([source]);
-    if (held.isNotEmpty) throw _downloadRefusal(held);
+    final (:held, :unreadable) = _notDownloadedIn([source]);
+    if (held.isNotEmpty) throw _downloadRefusal(held, unreadable: unreadable);
     try {
       // The copy is long, so it runs outside the lock: the binder file is
       // checked at the folder's turn first, then the gate, with no await
@@ -8223,8 +8338,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           // A binder that changed since is only read, never swept.
           if (own) sweepSource = _templateGateProblem(binder, snap) == null && !_isLocked(binder);
           // A template file that is not downloaded is asked for, and no page is made.
-          final held = _notDownloadedIn([src]);
-          if (held.isNotEmpty) throw _downloadRefusal(held);
+          final (:held, :unreadable) = _notDownloadedIn([src]);
+          if (held.isNotEmpty) throw _downloadRefusal(held, unreadable: unreadable);
           final c = AttachmentCopy();
           await _copyDirNotify(
             src,
@@ -8271,8 +8386,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       pages: pages,
     );
     // The same order as a page's: list, gate, copy, then the template file.
-    final held = _notDownloadedIn([for (final id in ordered) _assetsDir(path, id)]);
-    if (held.isNotEmpty) throw _downloadRefusal(held);
+    final (:held, :unreadable) = _notDownloadedIn([for (final id in ordered) _assetsDir(path, id)]);
+    if (held.isNotEmpty) throw _downloadRefusal(held, unreadable: unreadable);
     await templateStepHook?.call('saveAssets');
     final snap = _templateSnap(null);
     final copies = <AttachmentCopy>[];
@@ -8634,11 +8749,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // Listed by name before anything is copied: a template file that is not
       // downloaded is asked for, and the binder is not made (t2a).
       if (templates != null) {
-        final held = _notDownloadedIn([
+        final (:held, :unreadable) = _notDownloadedIn([
           for (var i = 0; i < made.pages.length; i++)
             ?_safeTemplateAssets(templates, template.id, template.pages[i].id),
         ]);
-        if (held.isNotEmpty) throw _downloadRefusal(held);
+        if (held.isNotEmpty) throw _downloadRefusal(held, unreadable: unreadable);
       }
       for (var i = 0; templates != null && i < made.pages.length; i++) {
         final src = _safeTemplateAssets(templates, template.id, template.pages[i].id);
@@ -10382,6 +10497,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   /// Writes any unsaved change now.
   Future<void> flush() async {
+    _assertNoZipJob('flush()');
     _saveTimer?.cancel();
     _saveTimer = null;
     final p = _pendingSave;
@@ -11569,7 +11685,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // version, and no box of mine holds the recorded one (Place both, a
       // merged result or Keep theirs carry it forward, so it stays required:
       // after a revert it may be recorded again, but it is never lost).
-      final kept = b.rev != null && n.rev != null ? n.rev == b.rev : _sameBoxContent(n, b);
+      final kept = sameBoxVersion(n, b);
       if (!kept) continue;
       settled[n.id] = [
         for (final k in b.conflicts)
@@ -11603,22 +11719,18 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
   }
 
-  // Whether [b] holds the version recorded in [k] (the same rev, or the same
-  // content): the user kept it, in that box.
+  // Whether [b] holds the version recorded in [k] (sameBoxVersion): the user kept it, in that box.
   static bool _recordIsVersion(BoxConflict k, BoxRecord b) {
     final node = k.node;
     if (node == null || !node.isObject) return false;
     try {
       final x = BoxRecord.tryRead(RawObject.parse(node.text), node);
       if (x == null) return false;
-      return (x.rev != null && x.rev == b.rev) || _sameBoxContent(x, b);
+      return sameBoxVersion(x, b);
     } on FormatException {
       return false;
     }
   }
-
-  static bool _sameBoxContent(BoxRecord x, BoxRecord y) =>
-      x.typeId == y.typeId && x.data == y.data && x.snapshotText == y.snapshotText;
 
   // The copy's node [n] as a consumed copy's re-check requires it, without
   // what the user settled since the merge (0120): null when [n] is itself a
@@ -17203,8 +17315,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     // Listed by name before anything is made: a file that is not downloaded is
     // asked for, and nothing is copied.
-    final held = _notDownloadedIn(sources);
-    if (held.isNotEmpty) throw _downloadRefusal(held);
+    final (:held, :unreadable) = _notDownloadedIn(sources);
+    if (held.isNotEmpty) throw _downloadRefusal(held, unreadable: unreadable);
     try {
       await createFolderCoordinated(dir);
       for (final src in sources) {
