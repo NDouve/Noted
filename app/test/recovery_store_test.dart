@@ -195,6 +195,62 @@ void main() {
       expect(files('.json'), isEmpty);
     });
 
+    // Replaces the file every time the point is reached, each time with other
+    // bytes (a listing runs the migration twice).
+    Future<void> Function(String) replaceAt(String point, String ext, String content) {
+      var n = 0;
+      return (p) async {
+        if (p != point) return;
+        File('${dir.path}/${_legacyName(r'D:\Notes', 'p1')}$ext').writeAsStringSync('$content${' ' * n++}');
+      };
+    }
+
+    test('an old page file replaced after it was converted is kept and reported on every start, never duplicated',() async {
+      legacy(r'D:\Notes', _page('p1', 'old'));
+      final b = writePage(_page('p1', 'replacement'));
+      final first = await store(hook: replaceAt('envelope-published', '.canvas', b)).list();
+      expect(first.problems, hasLength(1));
+      expect(File(files('.canvas').single).readAsStringSync(), startsWith(b));
+      expect(files('.entry'), hasLength(1));
+      // The metadata went first, so the kept page is now a lone file: it stays
+      // and is reported on every start, with no duplicate envelope.
+      for (var i = 0; i < 2; i++) {
+        final l = await store().list();
+        expect(l.problems, hasLength(1));
+        expect(l.entries, hasLength(1));
+        expect(File(files('.canvas').single).readAsStringSync(), startsWith(b));
+        expect(files('.entry'), hasLength(1));
+      }
+    });
+
+    test('a lone old page file replaced before it is removed is kept and reported', () async {
+      legacy(r'D:\Notes', _page('p1', 'old'));
+      await store().list();
+      legacy(r'D:\Notes', _page('p1', 'old'));
+      File('${dir.path}/${_legacyName(r'D:\Notes', 'p1')}.json').deleteSync();
+      final b = writePage(_page('p1', 'replacement'));
+      final l = await store(hook: replaceAt('legacy-half-read', '.canvas', b)).list();
+      expect(l.problems, hasLength(1));
+      expect(File(files('.canvas').single).readAsStringSync(), startsWith(b));
+    });
+
+    test('a lone old metadata file replaced before it is removed is kept and reported', () async {
+      legacy(r'D:\Notes', _page('p1', 'old'), base: writePage(_page('p1', 'b')));
+      await store().list();
+      final meta = jsonEncode({
+        'format': 1,
+        'folder': r'D:\Notes',
+        'pageId': 'p1',
+        'time': t.toIso8601String(),
+        'base': writePage(_page('p1', 'b')),
+      });
+      final j = File('${dir.path}/${_legacyName(r'D:\Notes', 'p1')}.json')..writeAsStringSync(meta);
+      final other = '$meta '; // different bytes, still the same entry
+      final l = await store(hook: replaceAt('legacy-half-read', '.json', other)).list();
+      expect(l.problems, hasLength(1));
+      expect(j.readAsStringSync(), startsWith(other));
+    });
+
     test('a migration stopped between the two deletes leaves nothing to report', () async {
       legacy(r'D:\Notes', _page('p1', 'old'));
       await store().list();

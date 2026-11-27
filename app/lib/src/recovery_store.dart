@@ -700,13 +700,31 @@ class RecoveryStore {
   // with other content, the page file goes first, so that what is left is a
   // metadata file that the entry is known to stand for. Either way the
   // leftover is recognised as already dealt with and just removed.
-  Future<void> _removeLegacy(String base, {required bool pageFirst}) async {
-    final j = File('$base.json');
-    final c = File('$base.canvas');
-    final (first, second) = pageFirst ? (c, j) : (j, c);
-    if (await first.exists()) await first.delete();
+  //
+  // Each file goes only while it still holds the bytes that were read and
+  // converted (0124, 0131); one that was replaced meanwhile is kept and
+  // reported, and the other file then stays too, so that the pair is migrated
+  // again on the next start and the replacement becomes an entry of its own.
+  Future<void> _removeLegacy(String base, List<int> metaBytes, List<int> pageBytes, {required bool pageFirst}) async {
+    final (first, second) = pageFirst
+        ? ('$base.canvas', '$base.json')
+        : ('$base.json', '$base.canvas');
+    List<int> bytesOf(String p) => p.endsWith('.json') ? metaBytes : pageBytes;
+    await _deleteChecked(first, bytesOf(first));
     await hook?.call('legacy-first-deleted');
-    if (await second.exists()) await second.delete();
+    await _deleteChecked(second, bytesOf(second));
+  }
+
+  // Deletes [path] only while it holds [bytes]; otherwise it is kept and a
+  // FormatException tells why, so the caller reports it.
+  static Future<void> _deleteChecked(String path, List<int> bytes) async {
+    final r = await deleteFileIfMatches(path, bytes: bytes);
+    if (r.deleted || r.outcome == DeleteOutcome.absent) return;
+    final kept = r.keptPath;
+    throw FormatException(
+      'it changed while it was being converted, so it is kept'
+      '${kept == null || kept == path ? '' : ' as $kept'}',
+    );
   }
 
   // Converts entries of the old two-file layout to the single file. Safe to
@@ -736,23 +754,29 @@ class RecoveryStore {
           // Half an old entry: only removed when an entry already holds it.
           envs ??= await _envelopes();
           if (hasPage) {
-            final text = await pageFile.readAsString();
+            final bytes = await pageFile.readAsBytes();
+            final text = utf8.decode(bytes);
             readPage(text);
             if (envs.any((e) => e.text == text)) {
-              await pageFile.delete();
+              await hook?.call('legacy-half-read');
+              await _deleteChecked(pageFile.path, bytes);
               continue;
             }
             throw const FormatException('the .json file of the entry is missing');
           }
-          final m = _legacyMeta(jsonDecode(await metaFile.readAsString()));
+          final bytes = await metaFile.readAsBytes();
+          final m = _legacyMeta(jsonDecode(utf8.decode(bytes)));
           if (envs.any((e) => _jsonHeld(e, m))) {
-            await metaFile.delete();
+            await hook?.call('legacy-half-read');
+            await _deleteChecked(metaFile.path, bytes);
             continue;
           }
           throw const FormatException('the .canvas file of the entry is missing');
         }
-        final m = _legacyMeta(jsonDecode(await metaFile.readAsString()));
-        final text = await pageFile.readAsString();
+        final metaBytes = await metaFile.readAsBytes();
+        final pageBytes = await pageFile.readAsBytes();
+        final m = _legacyMeta(jsonDecode(utf8.decode(metaBytes)));
+        final text = utf8.decode(pageBytes);
         _checkIdentity(stem, _legacyName(m.folder, m.id), m.id, readPage(text), m.base);
         final content = _encode(m.folder, m.id, (m.time ?? _time(null)).toIso8601String(), m.base, text);
         final key = _locKey(m.folder);
@@ -783,7 +807,7 @@ class RecoveryStore {
           }
         }
         await hook?.call('envelope-published');
-        await _removeLegacy(base, pageFirst: already);
+        await _removeLegacy(base, metaBytes, pageBytes, pageFirst: already);
       } on Object catch (e) {
         if (e is RecoveryTimeout) rethrow;
         _report(problems, damaged, base, _why(e));
