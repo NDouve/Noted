@@ -2804,13 +2804,13 @@ A dated record of Noted's product and technical decisions. Each entry gives the 
 - **Decision:**
   - **The case.** The open page's file is a conflict copy, for example `<id>-NOTED-MCP-x.canvas`, and its original `<id>.canvas` comes back.
   - **Inside a save.** The save's own check of its file does nothing: no merge, nothing listed or scheduled, and the save's expected bytes are unchanged. The save keeps writing the copy.
-  - **From outside a save.** The merge runs from a check that is not part of the save chain: the copy's watcher event, the original's check, or the folder check. On iOS that is the iCloud change and the folder check; on Android, the next launch.
+  - **From outside a save.** The merge runs from a check that is not part of the save chain: the copy's watcher event, the original's check, or the folder check. On iOS that is the iCloud change and the folder check. On Android it is a pull's file changes or the next launch; OneDrive places there are pull-only and never merge copies.
     - The screen, unsaved edits included, is merged with the original. The screen is the original side, so on an equal revision its header, box order and geometry win (amends 0053's "the page header is the original's"); AI access is still the stricter of the two.
     - The result is written at the original's path through publish-if-unchanged, read back, and its page id checked against the open page. Only then does the page save to the original.
     - The copy is kept in recovery and deleted only if unchanged. Its retirement mark (0183) also holds the screen's own edits since the last save, such as deleted boxes and settled conflicts, so a box deleted before the merge stays deleted.
     - A not-downloaded original is asked for and the merge waits.
-  - **A refused own-file merge is not listed** (amends 0194's "the copy stays listed"): listing the page's own file would stop its saves. The page keeps saving to the copy, and the original stays listed as a duplicate.
-  - **No job waits on itself.** No save-chain job awaits the chain's idle, `flush()`, a newly queued chain job or a check job, and no check job awaits a check. This is asserted in debug and test builds.
+  - **A refused own-file merge is not listed** (amends 0194's "the copy stays listed"): listing the page's own file would stop its saves. The page keeps saving to the copy. The original is listed as a duplicate once its own check runs.
+  - **No job waits on itself.** No save-chain job waits for the chain's idle or `flush()`, or queues and awaits a chain job; no check job queues a check. Debug and test builds assert this where the wait or the queueing starts. **Known limit:** a job that awaits a future started elsewhere isn't seen.
 - **Rationale:** the save of such a page awaited `flush()` on itself and stopped every later save of the page for the session. A merge from outside the save, which writes only checked bytes and closes nothing, can't lose the screen's edits.
 - **Alternatives considered:**
   - closing the page, merging it closed and reopening it (could discard the only copy of unsaved edits);
