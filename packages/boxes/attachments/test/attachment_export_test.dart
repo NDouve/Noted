@@ -55,7 +55,30 @@ Uint8List pngHeader(int w, int h) {
   d.setUint32(20, h);
   d.setUint8(24, 8);
   d.setUint8(25, 6);
-  return d.buffer.asUint8List();
+  final out = d.buffer.asUint8List();
+  d.setUint32(29, _crc(out, 12, 29));
+  return out;
+}
+
+// Bitwise CRC-32, independent of the module's table version.
+int _crc(Uint8List b, int start, int end) {
+  var c = 0xFFFFFFFF;
+  for (var i = start; i < end; i++) {
+    c ^= b[i];
+    for (var k = 0; k < 8; k++) {
+      c = (c & 1) != 0 ? 0xEDB88320 ^ (c >> 1) : c >> 1;
+    }
+  }
+  return c ^ 0xFFFFFFFF;
+}
+
+// [pngHeader] with [edit] applied, the CRC then fixed unless [fixCrc] is false.
+Uint8List badPng(int w, int h, void Function(ByteData d) edit, {bool fixCrc = true}) {
+  final b = pngHeader(w, h);
+  final d = ByteData.sublistView(b);
+  edit(d);
+  if (fixCrc) d.setUint32(29, _crc(b, 12, 29));
+  return b;
 }
 
 AttachmentRef embedded(String name, Uint8List bytes) =>
@@ -175,6 +198,28 @@ void main() {
         final png = pngHeader(8000, 6000);
         final f = await image.export(imageData(embedded('big.png', png)), ExportFormat.original, contextOf(null));
         expect(f!.bytes, png);
+      });
+
+      final malformed = <String, Uint8List>{
+        'length field is not 13': badPng(100, 100, (d) => d.setUint32(8, 14)),
+        'only 20 bytes': pngHeader(100, 100).sublist(0, 20),
+        'a truncated IHDR (30 bytes)': pngHeader(100, 100).sublist(0, 30),
+        'width 0': badPng(0, 100, (d) {}),
+        'a bad CRC': badPng(100, 100, (d) => d.setUint32(29, 1), fixCrc: false),
+        'a bad bit depth': badPng(100, 100, (d) => d.setUint8(24, 7)),
+        'a colour type that doesn\'t take the depth': badPng(100, 100, (d) {
+          d.setUint8(25, 3);
+          d.setUint8(24, 16);
+        }),
+      };
+      malformed.forEach((label, bytes) {
+        test('never comes back as the same bytes: $label', () async {
+          final source = _Source(100, 100);
+          exportImageOpener = (_) async => source;
+          final f = await image.export(imageData(embedded('m.png', bytes)), ExportFormat.png, contextOf(null));
+          expect(f, isNull); // decoded (the fake fails), not passed through
+          expect(source.decodes, isNonZero);
+        });
       });
 
       test('at the cap exactly passes through; a malformed header does not', () async {
