@@ -12,6 +12,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:noted_canvas/noted_canvas.dart';
 import 'package:noted_core/noted_core.dart';
+// ignore: implementation_imports -- the hidden test seam of the folder walk
+import 'package:noted_core/src/storage/folder_walk.dart' show debugListDir;
 
 import 'ai/ai_access_service.dart';
 import 'ai/ai_link_authority.dart';
@@ -3739,18 +3741,28 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   // The not-downloaded files (by path) in the assets folders [dirs], by name and
   // metadata only: nothing is read (t2a).
-  List<String> _notDownloadedIn(Iterable<Directory> dirs) => [
-    for (final d in dirs)
-      if (d.existsSync()) ...folderWalk(d.path).notDownloaded,
-  ];
+  ({List<String> held, Set<String> unreadable}) _notDownloadedIn(Iterable<Directory> dirs) {
+    final held = <String>[];
+    final unreadable = <String>{};
+    for (final d in dirs) {
+      if (!d.existsSync()) continue;
+      final walk = folderWalk(d.path);
+      held.addAll(walk.notDownloaded);
+      unreadable.addAll(walk.unreadable);
+    }
+    return (held: held, unreadable: unreadable);
+  }
 
   /// The refusal of a copy whose source holds files that are not downloaded:
   /// each is asked for, and the text says what to do. [page] and [place] (a
   /// move's page and target) give the move's own text. Without a requester
   /// (nothing can be asked for) the files are only placeholders.
-  NotebookException _downloadRefusal(Iterable<String> paths, {String? page, String? place}) {
+  NotebookException _downloadRefusal(Iterable<String> paths, {Set<String> unreadable = const {}, String? page, String? place}) {
+    if (paths.isNotEmpty && paths.every(unreadable.contains)) {
+      return const NotebookException("A folder can't be read, so it was not copied.");
+    }
     for (final p in paths) {
-      askSafely(p, askDownload);
+      if (!unreadable.contains(p)) askSafely(p, askDownload);
     }
     if (askDownload == null) {
       return NotebookException(
@@ -4414,17 +4426,22 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // whole delete (nothing was moved, so nothing is put back): the files are
     // asked for, and the user deletes again once they are here.
     if (appleMode()) {
-      var waiting = false;
+      var waiting = false, unreadable = false;
       for (var i = 0; i < ids.length; i++) {
         final dir = _assetsDir(locs[i], ids[i]);
         if (!dir.existsSync()) continue;
         final walk = folderWalk(dir.path);
         for (final p in walk.notDownloaded) {
+          if (walk.unreadable.contains(p)) {
+            unreadable = true;
+            continue;
+          }
           waiting = true;
           askSafely(p, askDownload);
         }
       }
       if (waiting) throw const NotebookException('Still downloading. Delete again once the files are here.');
+      if (unreadable) throw const NotebookException("A folder of this page can't be read.");
     }
     final previous = _lastDeleted;
     if (previous != null) discardDeleted(previous);
@@ -5996,9 +6013,10 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     Future<void> walk(Directory s, Directory d) async {
       final List<FileSystemEntity> entries;
       try {
-        entries = s.listSync(followLinks: false);
+        entries = debugListDir?.call(s.path) ?? s.listSync(followLinks: false);
       } on FileSystemException {
         left.add(s.path);
+        if (apple) downloading?.add(s.path); // unreadable: it may hold a file not downloaded, as folderWalk counts it
         return;
       }
       for (final e in entries) {
@@ -6785,8 +6803,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // Before anything is written, each page's images and files are listed by
     // name: a file that is not downloaded is asked for, and refuses the copy.
     for (final p in ids) {
-      final held = _notDownloadedIn([_assetsDir(fromLoc, p)]);
-      if (held.isNotEmpty) throw _downloadRefusal(held, page: nameOf(p), place: _placeName(toLoc));
+      final (:held, :unreadable) = _notDownloadedIn([_assetsDir(fromLoc, p)]);
+      if (held.isNotEmpty) throw _downloadRefusal(held, unreadable: unreadable, page: nameOf(p), place: _placeName(toLoc));
     }
     // Only the moved page's parent and order change; its subpages keep theirs.
     final moved = [
@@ -8113,8 +8131,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // for, and nothing is copied); the `saveAssets` gate; the copy; then the
     // template file, at its own `saveTemplate` gate.
     final source = _assetsDir(loc, pageId);
-    final held = _notDownloadedIn([source]);
-    if (held.isNotEmpty) throw _downloadRefusal(held);
+    final (:held, :unreadable) = _notDownloadedIn([source]);
+    if (held.isNotEmpty) throw _downloadRefusal(held, unreadable: unreadable);
     try {
       // The copy is long, so it runs outside the lock: the binder file is
       // checked at the folder's turn first, then the gate, with no await
@@ -8245,8 +8263,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
           // A binder that changed since is only read, never swept.
           if (own) sweepSource = _templateGateProblem(binder, snap) == null && !_isLocked(binder);
           // A template file that is not downloaded is asked for, and no page is made.
-          final held = _notDownloadedIn([src]);
-          if (held.isNotEmpty) throw _downloadRefusal(held);
+          final (:held, :unreadable) = _notDownloadedIn([src]);
+          if (held.isNotEmpty) throw _downloadRefusal(held, unreadable: unreadable);
           final c = AttachmentCopy();
           await _copyDirNotify(
             src,
@@ -8293,8 +8311,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       pages: pages,
     );
     // The same order as a page's: list, gate, copy, then the template file.
-    final held = _notDownloadedIn([for (final id in ordered) _assetsDir(path, id)]);
-    if (held.isNotEmpty) throw _downloadRefusal(held);
+    final (:held, :unreadable) = _notDownloadedIn([for (final id in ordered) _assetsDir(path, id)]);
+    if (held.isNotEmpty) throw _downloadRefusal(held, unreadable: unreadable);
     await templateStepHook?.call('saveAssets');
     final snap = _templateSnap(null);
     final copies = <AttachmentCopy>[];
@@ -8656,11 +8674,11 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
       // Listed by name before anything is copied: a template file that is not
       // downloaded is asked for, and the binder is not made (t2a).
       if (templates != null) {
-        final held = _notDownloadedIn([
+        final (:held, :unreadable) = _notDownloadedIn([
           for (var i = 0; i < made.pages.length; i++)
             ?_safeTemplateAssets(templates, template.id, template.pages[i].id),
         ]);
-        if (held.isNotEmpty) throw _downloadRefusal(held);
+        if (held.isNotEmpty) throw _downloadRefusal(held, unreadable: unreadable);
       }
       for (var i = 0; templates != null && i < made.pages.length; i++) {
         final src = _safeTemplateAssets(templates, template.id, template.pages[i].id);
@@ -16878,8 +16896,8 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     }
     // Listed by name before anything is made: a file that is not downloaded is
     // asked for, and nothing is copied.
-    final held = _notDownloadedIn(sources);
-    if (held.isNotEmpty) throw _downloadRefusal(held);
+    final (:held, :unreadable) = _notDownloadedIn(sources);
+    if (held.isNotEmpty) throw _downloadRefusal(held, unreadable: unreadable);
     try {
       await createFolderCoordinated(dir);
       for (final src in sources) {

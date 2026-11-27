@@ -20,7 +20,7 @@ import 'package:noted/src/notebook.dart';
 import 'package:noted_core/noted_core.dart';
 import 'package:noted_core/src/storage/dataless.dart' show debugDatalessPaths, debugMarkDataless, debugUnmarkDataless;
 import 'package:noted_core/src/storage/exclusive_move.dart' show debugMoveStrategy, debugRenameDelay;
-import 'package:noted_core/src/storage/folder_walk.dart' show debugAppleMode;
+import 'package:noted_core/src/storage/folder_walk.dart' show debugAppleMode, debugListDir;
 import 'support/notebook_folder.dart';
 
 void main() {
@@ -49,6 +49,7 @@ void main() {
   });
   tearDown(() async {
     debugAppleMode = null;
+    debugListDir = null;
     debugDatalessPaths = null;
     debugRenameDelay = null;
     debugMoveStrategy = null;
@@ -139,6 +140,22 @@ void main() {
       expect(assetsOf(extra, a).existsSync(), isFalse);
       expect(File('${pages.path}$sep$a.canvas').existsSync(), isTrue);
       expect(names(src), [name, name2]..sort());
+    });
+
+    test('off Apple a folder that cannot be read refuses the move and says so', () async {
+      final (nb, a, x) = await scanned();
+      final src = assetsOf(pages, a);
+      put(src, name, good);
+      debugAppleMode = false;
+      debugListDir = (d) =>
+          sameFile(d, src.path) ? throw FileSystemException('io', d, const OSError('io', 5)) : Directory(d).listSync(followLinks: false);
+      await expectLater(
+        nb.move(a, parentId: x),
+        throwsA(isA<NotebookException>().having((e) => e.message, 'message', "A folder can't be read, so it was not copied.")),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(File('${extra.path}$sep$a.canvas').existsSync(), isFalse);
+      expect(names(src), [name]);
     });
 
     test('B1: a file evicted between the listing and the copy is refused, the copies removed, the original unchanged', () async {
@@ -673,6 +690,41 @@ void main() {
       );
       expect(names(src), [name2]);
       expect(askedFor('${src.path}$sep$name2'), isTrue);
+    });
+
+    test('a folder that cannot be read refuses a delete whole, with the can-not-be-read text', () async {
+      final (nb, a, _) = await scanned();
+      final src = assetsOf(pages, a);
+      put(src, name, good);
+      put(Directory('${src.path}${sep}sub'), name2, good2);
+      debugListDir = (d) => sameFile(d, '${src.path}${sep}sub')
+          ? throw FileSystemException('io', d, const OSError('io', 5))
+          : Directory(d).listSync(followLinks: false);
+      await expectLater(
+        nb.delete(a),
+        throwsA(isA<NotebookException>().having((e) => e.message, 'message', "A folder of this page can't be read.")),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(File('${pages.path}$sep$a.canvas').existsSync(), isTrue);
+      expect(askedFor('${src.path}${sep}sub'), isFalse);
+    });
+
+    test('a stray folder with an unreadable subfolder stays, with no "could not be moved" notice', () async {
+      final (nb, a, x) = await scanned();
+      final src = assetsOf(pages, a);
+      put(src, name, good);
+      put(Directory('${src.path}${sep}sub'), name2, good2);
+      debugListDir = (d) => sameFile(d, '${src.path}${sep}sub')
+          ? throw FileSystemException('io', d, const OSError('io', 5))
+          : Directory(d).listSync(followLinks: false);
+      await expectLater(nb.move(a, parentId: x), throwsA(isA<NotebookException>()));
+      notices.clear();
+      Notebook.strayQuiet = Duration.zero;
+      for (var i = 0; i < 2; i++) {
+        await nb.checkFolders();
+      }
+      expect(Directory('${src.path}${sep}sub').existsSync(), isTrue, reason: 'left where it is');
+      expect(notices.any((n) => n.contains('could not be moved')), isFalse, reason: '$notices');
     });
 
     test('after it is downloaded, the stray mover brings the file to its page', () async {
