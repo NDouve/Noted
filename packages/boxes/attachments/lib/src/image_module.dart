@@ -116,9 +116,9 @@ final class ImageModule extends BoxModule<ImageData?> {
       data == null ? const [] : const [ExportFormat.original, ExportFormat.png];
 
   /// The original file (read and checked by [readAttachment]), or a PNG: a PNG
-  /// original unchanged, any other image decoded within the export caps (a
-  /// GIF's first frame); one over 100 MP is refused with a [ExportRefused]
-  /// whose message the host shows.
+  /// original within the export caps unchanged, any other image (or a PNG over
+  /// the caps) decoded within them (a GIF's first frame); one over 100 MP is
+  /// refused with a [ExportRefused] whose message the host shows.
   @override
   Future<ExportedFile?> export(ImageData? data, ExportFormat format, ExportContext context) async {
     if (data == null) return null;
@@ -129,7 +129,17 @@ final class ImageModule extends BoxModule<ImageData?> {
       case 'original':
         return ExportedFile(data.ref.name, bytes);
       case 'png':
-        if (isPngBytes(bytes)) return ExportedFile('', bytes);
+        // A PNG within the raster caps passes through; one over them (or with
+        // a header that can't be read) goes through the capped decode.
+        final dims = pngDimensions(bytes);
+        if (dims != null &&
+            dims.$1 > 0 &&
+            dims.$2 > 0 &&
+            dims.$1 <= exportMaxSide &&
+            dims.$2 <= exportMaxSide &&
+            dims.$1 * dims.$2 <= exportMaxPixels) {
+          return ExportedFile('', bytes);
+        }
         try {
           final image = await decodeWithinCap(bytes, data.ref.name);
           try {
@@ -153,6 +163,47 @@ final class ImageModule extends BoxModule<ImageData?> {
   @override
   Widget buildView(BuildContext context, BoxContext<ImageData?> box) =>
       _ImageBox(box: box, editable: false);
+}
+
+/// The width and height in the IHDR chunk of a PNG in [bytes], read from the
+/// header without decoding; null if [bytes] isn't a PNG or its first chunk
+/// isn't a well-formed IHDR: 13 bytes of data, a matching CRC-32 and a valid
+/// bit depth and colour type pair.
+(int, int)? pngDimensions(Uint8List bytes) {
+  if (bytes.length < 33 || !isPngBytes(bytes)) return null;
+  final d = ByteData.sublistView(bytes);
+  if (d.getUint32(8) != 13 || d.getUint32(12) != 0x49484452) return null;
+  if (_crc32(bytes, 12, 29) != d.getUint32(29)) return null;
+  final depth = bytes[24], color = bytes[25];
+  final depths = switch (color) {
+    0 => const [1, 2, 4, 8, 16],
+    2 || 4 || 6 => const [8, 16],
+    3 => const [1, 2, 4, 8],
+    _ => const <int>[],
+  };
+  if (!depths.contains(depth)) return null;
+  return (d.getUint32(16), d.getUint32(20));
+}
+
+final Uint32List _crcTable = () {
+  final t = Uint32List(256);
+  for (var n = 0; n < 256; n++) {
+    var c = n;
+    for (var k = 0; k < 8; k++) {
+      c = (c & 1) != 0 ? 0xEDB88320 ^ (c >> 1) : c >> 1;
+    }
+    t[n] = c;
+  }
+  return t;
+}();
+
+/// The CRC-32 of `bytes[start, end)`, as PNG chunks use.
+int _crc32(Uint8List bytes, int start, int end) {
+  var c = 0xFFFFFFFF;
+  for (var i = start; i < end; i++) {
+    c = _crcTable[(c ^ bytes[i]) & 0xFF] ^ (c >> 8);
+  }
+  return c ^ 0xFFFFFFFF;
 }
 
 /// The size of a new image box for an image of [w] × [h] pixels: its pixel
