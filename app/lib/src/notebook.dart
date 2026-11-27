@@ -3736,18 +3736,32 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
 
   // The not-downloaded files (by path) in the assets folders [dirs], by name and
   // metadata only: nothing is read (t2a).
-  List<String> _notDownloadedIn(Iterable<Directory> dirs) => [
-    for (final d in dirs)
-      if (d.existsSync()) ...folderWalk(d.path).notDownloaded,
-  ];
+  List<String> _notDownloadedIn(Iterable<Directory> dirs) {
+    _unreadableFolders.clear();
+    final held = <String>[];
+    for (final d in dirs) {
+      if (!d.existsSync()) continue;
+      final walk = folderWalk(d.path);
+      held.addAll(walk.notDownloaded);
+      _unreadableFolders.addAll(walk.unreadable);
+    }
+    return held;
+  }
+
+  // The folders the last [_notDownloadedIn] could not list: they are refused, not
+  // asked for.
+  final Set<String> _unreadableFolders = {};
 
   /// The refusal of a copy whose source holds files that are not downloaded:
   /// each is asked for, and the text says what to do. [page] and [place] (a
   /// move's page and target) give the move's own text. Without a requester
   /// (nothing can be asked for) the files are only placeholders.
   NotebookException _downloadRefusal(Iterable<String> paths, {String? page, String? place}) {
+    if (paths.isNotEmpty && paths.every(_unreadableFolders.contains)) {
+      return const NotebookException("A folder of this page can't be read.");
+    }
     for (final p in paths) {
-      askSafely(p, askDownload);
+      if (!_unreadableFolders.contains(p)) askSafely(p, askDownload);
     }
     if (askDownload == null) {
       return NotebookException(
@@ -4411,17 +4425,22 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
     // whole delete (nothing was moved, so nothing is put back): the files are
     // asked for, and the user deletes again once they are here.
     if (appleMode()) {
-      var waiting = false;
+      var waiting = false, unreadable = false;
       for (var i = 0; i < ids.length; i++) {
         final dir = _assetsDir(locs[i], ids[i]);
         if (!dir.existsSync()) continue;
         final walk = folderWalk(dir.path);
         for (final p in walk.notDownloaded) {
+          if (walk.unreadable.contains(p)) {
+            unreadable = true;
+            continue;
+          }
           waiting = true;
           askSafely(p, askDownload);
         }
       }
       if (waiting) throw const NotebookException('Still downloading. Delete again once the files are here.');
+      if (unreadable) throw const NotebookException("A folder of this page can't be read.");
     }
     final previous = _lastDeleted;
     if (previous != null) discardDeleted(previous);
@@ -5996,6 +6015,7 @@ class Notebook extends ChangeNotifier implements AiLinkHost, AiMergeHost {
         entries = s.listSync(followLinks: false);
       } on FileSystemException {
         left.add(s.path);
+        if (apple) downloading?.add(s.path); // unreadable: it may hold a file not downloaded, as folderWalk counts it
         return;
       }
       for (final e in entries) {

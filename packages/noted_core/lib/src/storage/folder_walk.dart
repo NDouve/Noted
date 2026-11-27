@@ -34,7 +34,7 @@ bool appleMode() {
 /// What [folderWalk] found in a folder tree, by name and metadata only: nothing
 /// was read.
 final class FolderWalk {
-  FolderWalk(this.files, this.notDownloaded, this.stubs);
+  FolderWalk(this.files, this.notDownloaded, this.stubs, {this.unreadable = const []});
 
   /// The files that are on this device (a stub is not one).
   final List<String> files;
@@ -47,6 +47,10 @@ final class FolderWalk {
 
   /// The stub files themselves.
   final List<String> stubs;
+
+  /// The folders whose listing failed (also in [notDownloaded], so every guard
+  /// refuses): what is in them is unknown.
+  final List<String> unreadable;
 
   /// Whether something in the tree is not on this device.
   bool get hasNotDownloaded => notDownloaded.isNotEmpty;
@@ -61,16 +65,19 @@ FolderWalk folderWalk(String dir) {
   final files = <String>[];
   final missing = <String>[];
   final stubs = <String>[];
+  final unreadable = <String>[];
   final sep = Platform.pathSeparator;
   void walk(String d) {
     final List<FileSystemEntity> entries;
     try {
       entries = debugListDir?.call(d) ?? Directory(d).listSync(followLinks: false);
-    } on FileSystemException {
+    } on FileSystemException catch (e) {
       // A folder that vanished holds nothing; any other failure may hide an
-      // evicted file, so the folder is recorded as not downloaded.
-      if (FileSystemEntity.typeSync(d, followLinks: false) != FileSystemEntityType.notFound) {
+      // evicted file, so the folder is recorded (never treated as empty).
+      if (!(_isGone(e.osError?.errorCode) &&
+          FileSystemEntity.typeSync(d, followLinks: false) == FileSystemEntityType.notFound)) {
         missing.add(d);
+        unreadable.add(d);
       }
       return;
     }
@@ -105,5 +112,13 @@ FolderWalk folderWalk(String dir) {
   } else {
     walk(dir);
   }
-  return FolderWalk(files, missing, stubs);
+  return FolderWalk(files, missing, stubs, unreadable: unreadable);
+}
+
+/// Whether an OS error code means the folder is no longer there: ENOENT or
+/// ENOTDIR (2 and 20 on Linux, Android, macOS and iOS), or file or path not
+/// found (2 and 3) on Windows.
+bool _isGone(int? code) {
+  if (code == null) return false;
+  return Platform.isWindows ? (code == 2 || code == 3) : (code == 2 || code == 20);
 }
