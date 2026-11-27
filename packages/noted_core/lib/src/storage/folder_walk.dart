@@ -12,6 +12,10 @@ import 'dataless.dart';
 /// production. Not exported by `noted_core.dart`.
 bool? debugAppleMode;
 
+/// A test seam: lists a folder in place of `Directory.listSync`, so a listing
+/// can fail. Null in production. Not exported by `noted_core.dart`.
+List<FileSystemEntity> Function(String dir)? debugListDir;
+
 /// Whether the folder rules of Apple's cloud storage apply: real macOS or iOS,
 /// or a test that set `debugDatalessAbi` to an Apple ABI or [debugAppleMode].
 bool appleMode() {
@@ -36,7 +40,9 @@ final class FolderWalk {
   final List<String> files;
 
   /// The paths to ask the system for: a dataless file or folder, and the target
-  /// of each stub (`.<name>.icloud` stands for `<name>`).
+  /// of each stub (`.<name>.icloud` stands for `<name>`). A folder whose listing
+  /// failed is here too: it may hold a file that is not downloaded, so it is
+  /// never treated as empty.
   final List<String> notDownloaded;
 
   /// The stub files themselves.
@@ -59,8 +65,13 @@ FolderWalk folderWalk(String dir) {
   void walk(String d) {
     final List<FileSystemEntity> entries;
     try {
-      entries = Directory(d).listSync(followLinks: false);
+      entries = debugListDir?.call(d) ?? Directory(d).listSync(followLinks: false);
     } on FileSystemException {
+      // A folder that vanished holds nothing; any other failure may hide an
+      // evicted file, so the folder is recorded as not downloaded.
+      if (FileSystemEntity.typeSync(d, followLinks: false) != FileSystemEntityType.notFound) {
+        missing.add(d);
+      }
       return;
     }
     for (final e in entries) {

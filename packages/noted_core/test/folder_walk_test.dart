@@ -14,7 +14,7 @@ import 'package:noted_core/noted_core.dart';
 import 'package:noted_core/src/storage/dataless.dart' show debugDatalessPaths, debugMarkDataless;
 import 'package:noted_core/src/storage/exclusive_move.dart'
     show debugMoveVolumeOf, debugNoReplaceErrno, debugRenameDelay;
-import 'package:noted_core/src/storage/folder_walk.dart' show debugAppleMode;
+import 'package:noted_core/src/storage/folder_walk.dart' show debugAppleMode, debugListDir;
 
 import 'support/coordination_support.dart';
 
@@ -29,6 +29,7 @@ void suite() {
   setUp(() async => dir = await Directory.systemTemp.createTemp('noted_walk'));
   tearDown(() async {
     debugAppleMode = null;
+    debugListDir = null;
     debugDatalessPaths = null;
     debugRenameDelay = null;
     debugMoveVolumeOf = null;
@@ -118,6 +119,29 @@ void suite() {
       );
       await Future<void>.delayed(Duration.zero);
       expect(asked, [p('src/c.bin')]);
+    });
+
+    test('a subfolder whose listing fails counts as not downloaded, and the move is refused', () async {
+      makeFolder();
+      debugAppleMode = true;
+      debugListDir = (d) {
+        if (d == p('src/sub')) throw FileSystemException('denied', d);
+        return Directory(d).listSync(followLinks: false);
+      };
+      final w = folderWalk(p('src'));
+      expect(w.hasNotDownloaded, isTrue);
+      expect(w.notDownloaded, [p('src/sub')]);
+      final asked = <String>[];
+      expect(await moveExclusive(p('src'), p('dst'), ask: record(asked)), MoveOutcome.busy);
+      expect(Directory(p('src')).existsSync(), isTrue);
+      expect(Directory(p('dst')).existsSync(), isFalse);
+    });
+
+    test('a folder that vanished during the walk is not a failure', () {
+      makeFolder();
+      debugListDir = (d) => throw FileSystemException('gone', d);
+      Directory(p('src')).deleteSync(recursive: true);
+      expect(folderWalk(p('src')).hasNotDownloaded, isFalse);
     });
 
     test('a walk that was passed in is used', () async {
